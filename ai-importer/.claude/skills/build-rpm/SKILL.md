@@ -258,6 +258,19 @@ rpmlint ./pkgs/<pkgname>/<pkgname>.spec 2>&1 \
   > ./pkgs/<pkgname>/rpmlint.txt || true
 ```
 
+### 3.6 ROS 依赖名门禁（仅 `<lang>=ros`，强制）
+
+spec 中所有 `ros-<distro>-*` 的 BuildRequires/Requires 必须在 `ros-projects.list` 中真实存在（§6 反幻觉铁律的机械校验）：
+
+```bash
+python3 /app/.claude/skills/build-rpm/scripts/verify_ros_spec_deps.py \
+  ./pkgs/<pkgname>/<pkgname>.spec --session-dir ${SESSION_DIR}
+VERIFY_RC=$?
+```
+
+- `VERIFY_RC=1`：幻觉依赖名——按输出的最近匹配建议回到 §3 修正 spec，重跑本节直至通过。**禁止跳过本门禁直接提交**。
+- `VERIFY_RC=0`：继续 §4。
+
 ### 4. 准备 rpmbuild 输入
 
 ```bash

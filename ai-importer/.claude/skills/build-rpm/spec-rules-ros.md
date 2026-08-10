@@ -79,7 +79,8 @@ export PKG_CONFIG_PATH=/opt/ros/%{ros_distro}/lib/pkgconfig${PKG_CONFIG_PATH:+:$
   - `registered_deps[]` → 已注册进 dep_registry 的依赖，**写 BuildRequires**（同一 COPR project 构建，安装时同源解析）
   - `missing_deps[]` → 缺口包，**不写 BuildRequires**（显式模式任务已终止，此文件不应出现在 spec 阶段）
 - 系统依赖（`analyze_ros_deps.py` 的 `build_requires[]` / `unresolved[]` 经 `--check-rpm` 实证）→ 普通 BuildRequires（`-devel` 命名）
-- **反幻觉铁律**：禁止凭 Fedora/Ubuntu ROS 经验猜依赖名。每个 `ros-humble-*` BuildRequires 必须能在 `ros-projects.list` 或 manifest 的依赖清单里找到依据；查不到就留空让构建失败诊断循环兜底，不得编造
+- **反幻觉铁律**：禁止凭 Fedora/Ubuntu ROS 经验猜依赖名。每个 `ros-humble-*` BuildRequires 必须能在 `ros-projects.list` 或 manifest 的依赖清单里找到依据；查不到就留空让构建失败诊断循环兜底，不得编造。**机械门禁**：spec 写完后由 `verify_ros_spec_deps.py`（SKILL §3.6）逐一比对清单，幻觉名直接打回；`submit_fix.py` 提交前同样强制执行
+- **`<build_type>` 不是依赖**：`ament_python` 形态是纯 setuptools 构建，**不产生任何 `ros-<distro>-*` 依赖**（清单中不存在 `ament-python`，凭 build_type 脑补它是历史实踩坑）；`ament_cmake` 形态的构建工具依赖是 `ros-%{ros_distro}-ament-cmake`，由 `analyze_ros_deps.py` 自动补入 ros_deps
 - `pkg.remap` 命中（deb→rpm 映射，`data/ros/global_config/pkg.remap`）→ 按 rpm 名写
 
 **运行时 Requires（ROS 特有，必须手写）**：`/opt/ros` 被 §2 的 `__requires_exclude_from` 豁免、autodeps 扫不到，少了这些 Requires 构建照样成功，但装上的包环境不就绪：

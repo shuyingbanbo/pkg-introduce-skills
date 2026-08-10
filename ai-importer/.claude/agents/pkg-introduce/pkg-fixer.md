@@ -126,7 +126,8 @@ cat "./pkgs/${PKGNAME}/ci_check_result.json" 2>/dev/null || true
 
 - 【前置条件】类别 B 且 `check_existing_package.py` 返回 `introduce_new`；或 trigger=ci_failed（类别 E，仅主包，`ci_check_result.json` 的 errors 列出缺失运行时依赖）。
 - 【动作序列】
-  1. 从错误报告/ci_check_result 提取缺失依赖名，**根据 `${LANG}` 映射到 RPM 包名**：Python `xxx` → `python3-xxx`；Java → `java-xxx` 或 `mvn(group:artifact)`；Ruby → `rubygem-xxx`；Node.js → `nodejs-xxx` 或 `npm(xxx)`。C/C++ 头文件 / pkg-config / 链接库按文件查：`dnf provides '*/xxx.h'`、`dnf provides 'pkgconfig(xxx)'`、`dnf provides 'libxxx.so*'`。
+  1. 从错误报告/ci_check_result 提取缺失依赖名，**根据 `${LANG}` 映射到 RPM 包名**：Python `xxx` → `python3-xxx`；Java → `java-xxx` 或 `mvn(group:artifact)`；Ruby → `rubygem-xxx`；Node.js → `nodejs-xxx` 或 `npm(xxx)`；ROS → `ros-<distro>-<name>` 保持原样（distro 取 session.json 的 `ros_distro`），**且必须在 `ros-projects.list` 中真实存在**。C/C++ 头文件 / pkg-config / 链接库按文件查：`dnf provides '*/xxx.h'`、`dnf provides 'pkgconfig(xxx)'`、`dnf provides 'libxxx.so*'`。
+     > **ROS 幻觉依赖名处置**：register 脚本对 `ros-<distro>-*` 做清单硬校验，**exit 3 = 该依赖名在 ros-projects.list 中不存在**——这是 spec 写错了依赖名，不是真的缺包。此时**禁止换个名字强行注册**（递归构建造不出清单外的 ROS 包），应改判 `rebuild`：按脚本输出的最近匹配建议修正 spec 中的依赖名（典型：`<build_type>ament_python</build_type>` 被误写成 `ros-<distro>-ament-python`，正确依赖是 `ros-<distro>-ament-cmake-python` 或纯 setuptools 不需要 ROS 构建依赖）。
   2. 构建期缺依赖先用 `check_existing_package.py` 确认（decision 映射见阶段 2 第 4 条）：
      ```bash
      python3 $BUILD_RPM_DIR/scripts/check_existing_package.py <rpm_pkgname> \

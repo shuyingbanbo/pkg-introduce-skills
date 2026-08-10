@@ -22,6 +22,7 @@
   5  需要重打 tarball 但 sources/<pkg>/ 不存在
   6  防陈旧闸门未通过（SRPM 内嵌 spec 与当前 spec 不一致）
   7  --reuse-srpm 但 srpms/ 下无可用 SRPM
+  8  ROS 依赖名门禁未通过（spec 含 ros-projects.list 外的幻觉依赖名）
 
 用法：
   python3 submit_fix.py --session-dir . --pkg git [--chroots a-x86_64,a-aarch64] [--reuse-srpm]
@@ -175,6 +176,34 @@ def _stale_gate(srpm: Path, pkg: str, spec_path: Path) -> int:
     return 0
 
 
+def _ros_deps_gate(sd: Path, pkg: str, spec_path: Path) -> int:
+    """ROS 依赖名门禁：lang=ros 时校验 spec 中 ros-<distro>-* 依赖名真实存在。"""
+    gate_f = sd / f"pkgs/{pkg}/gate_result_{pkg}.json"
+    lang = ""
+    if gate_f.exists():
+        try:
+            lang = _read_json(gate_f).get("lang", "") or ""
+        except Exception:
+            pass
+    if lang != "ros":
+        return 0
+    verify = _COPR_CLIENT.parent / "verify_ros_spec_deps.py"
+    if not verify.exists():
+        print(f"[submit_fix] WARN: {verify} 缺失，跳过 ROS 依赖名门禁", file=sys.stderr)
+        return 0
+    proc = subprocess.run(
+        [sys.executable, str(verify), str(spec_path), "--session-dir", str(sd)],
+        cwd=sd, capture_output=True, text=True,
+    )
+    if proc.returncode == 1:
+        return _fail(8, "ros-deps-gate",
+                     f"ROS 依赖名门禁未通过（修正 spec 后重提）:\n{proc.stderr.strip()}")
+    if proc.returncode != 0:
+        print(f"[submit_fix] WARN: ROS 依赖名门禁执行异常（rc={proc.returncode}），降级放行: "
+              f"{proc.stderr.strip()[:200]}", file=sys.stderr)
+    return 0
+
+
 def _failed_chroots(sd: Path, pkg: str, chroots: list) -> list:
     """dep_registry.json 中该包 per-chroot status == "failed" 的 chroot（保持入参顺序）。
 
@@ -298,6 +327,9 @@ def main() -> int:
     else:
         if not spec_path.exists():
             return _fail(1, "env", f"spec 不存在: {spec_path}")
+        rc = _ros_deps_gate(sd, pkg, spec_path)
+        if rc != 0:
+            return rc
         rc = _ensure_tarball(sd, pkg, spec_path)
         if rc != 0:
             return rc

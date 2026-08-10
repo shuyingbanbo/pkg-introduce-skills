@@ -7,6 +7,7 @@
 import argparse
 import json
 import re
+import sys
 from pathlib import Path
 
 # 引入构建工具链约束
@@ -58,6 +59,30 @@ def main():
     if not missing:
         print("[register-missing-deps] no missing packages found")
         return
+
+    # ROS 依赖名硬校验：log 里的 ros-<distro>-<name> 必须在 ros-projects.list 中
+    # 真实存在。不存在 = spec 幻觉依赖名，此时注册递归构建没有意义（造不出清单外
+    # 的 ROS 包），整体拒绝并提示修 spec。任一条幻觉名即拒绝全部，避免部分注册
+    # 掩盖真正的修法。
+    from ros_dep_guard import (  # noqa: E402
+        format_invalid_report, lookup_ros_dep, split_ros_name, suggest_ros_names,
+    )
+    from analyze_ros_deps import load_projects  # noqa: E402
+    bad: dict[str, list[str]] = {}
+    bad_distro = ""
+    for rpm_pkg in missing:
+        ros_parts = split_ros_name(rpm_pkg)
+        if not ros_parts:
+            continue
+        ros_distro, ros_name = ros_parts
+        projects = load_projects(ros_distro)
+        if projects and lookup_ros_dep(ros_name, projects) is None:
+            bad[ros_name] = suggest_ros_names(ros_name, projects)
+            bad_distro = ros_distro
+    if bad:
+        print(f"[register-missing-deps] ERROR: 拒绝注册。\n"
+              f"{format_invalid_report(bad, bad_distro)}", file=sys.stderr)
+        sys.exit(3)
 
     reg_path = sd / "dep_registry.json"
     reg = json.loads(reg_path.read_text(encoding="utf-8")) if reg_path.exists() else {}

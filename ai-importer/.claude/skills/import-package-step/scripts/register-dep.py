@@ -128,6 +128,24 @@ def main():
               f"Adapt spec/source to the chroot toolchain version instead.", file=sys.stderr)
         sys.exit(2)
 
+    # ROS 依赖名硬校验：ros-<distro>-<name> 必须在 ros-projects.list 中真实存在。
+    # 不存在 = spec 里的幻觉依赖名——递归构建造不出清单外的 ROS 包，只会逼 agent
+    # 交差（历史教训：ros-humble-ament-python 被"构建"成 README-only 空壳包）。
+    # 正确动作是修 spec 的依赖名，不是注册。
+    from ros_dep_guard import (  # noqa: E402
+        format_invalid_report, lookup_ros_dep, split_ros_name, suggest_ros_names,
+    )
+    from analyze_ros_deps import load_projects  # noqa: E402
+    ros_parts = split_ros_name(args.pkg)
+    if ros_parts:
+        ros_distro, ros_name = ros_parts
+        projects = load_projects(ros_distro)
+        if projects and lookup_ros_dep(ros_name, projects) is None:
+            bad = {ros_name: suggest_ros_names(ros_name, projects)}
+            print(f"[register-dep] ERROR: 拒绝注册。\n{format_invalid_report(bad, ros_distro)}",
+                  file=sys.stderr)
+            sys.exit(3)
+
     reg_path = Path(args.session_dir) / "dep_registry.json"
     reg = json.loads(reg_path.read_text(encoding="utf-8")) if reg_path.exists() else {}
 

@@ -117,6 +117,14 @@ def parse_package_xml(source_dir: str, pkgname: str = "") -> dict:
             if el.text and el.text.strip():
                 test_deps.append(el.text.strip())
 
+    # <export><build_type>ament_cmake|ament_python</build_type></export>
+    # build_type 不是依赖标签（ROS_DEP_TAGS 不含它），单独提取：
+    # ament_python 常被误当成依赖名脑补出 ros-<distro>-ament-python（清单中不存在）
+    build_type = ""
+    bt = root.find("export/build_type")
+    if bt is not None and bt.text:
+        build_type = bt.text.strip()
+
     return {
         "found": True,
         "pkg_xml_path": str(xml_path),
@@ -126,6 +134,7 @@ def parse_package_xml(source_dir: str, pkgname: str = "") -> dict:
         "deps": sorted(set(deps)),
         "buildtool_deps": sorted(set(buildtool_deps)),
         "test_deps": sorted(set(test_deps)),
+        "build_type": build_type,
     }
 
 
@@ -175,10 +184,16 @@ def classify_deps(dep_names: list[str], projects: dict, remap: dict,
     build_requires: list[str] = []
     unresolved: list[str] = []
     for name in sorted(set(dep_names)):
-        if name in projects:
-            ros_deps.append(name)
+        # package.xml 用下划线命名、ros-projects.list 用连字符：归一化后查清单，
+        # 命中时以清单规范名（连字符）输出（否则 rosidl_default_generators 这类
+        # 名字会全部漏进 unresolved）
+        norm = name.replace("_", "-")
+        if norm in projects:
+            ros_deps.append(norm)
         elif name in remap:
             build_requires.append(remap[name])
+        elif norm in remap:
+            build_requires.append(remap[norm])
         elif base_pkgs and name in base_pkgs:
             pass  # 系统依赖，基础源已有，不需要 BuildRequires
         else:
@@ -229,6 +244,15 @@ def main() -> int:
     all_dep_names = parsed["deps"] + parsed["buildtool_deps"]
     classified = classify_deps(all_dep_names, projects, remap)
 
+    # <build_type> 不是依赖标签，但决定构建工具链：
+    #   ament_cmake  → 构建必须依赖 ament-cmake（清单内），补入 ros_deps
+    #   ament_python → 纯 setuptools 构建，不产生任何 ros-<distro>-* 依赖
+    #     （历史教训：agent 曾凭 build_type 脑补出不存在的 ros-humble-ament-python）
+    build_type = parsed.get("build_type", "")
+    if build_type == "ament_cmake" and "ament-cmake" in projects \
+            and "ament-cmake" not in classified["ros_deps"]:
+        classified["ros_deps"] = sorted(classified["ros_deps"] + ["ament-cmake"])
+
     # 外部/系统依赖的 RPM 实证
     rpm_check = None
     if args.check_rpm and classified["unresolved"]:
@@ -239,6 +263,7 @@ def main() -> int:
         "version": parsed.get("version", ""),
         "license": parsed.get("license", ""),
         "ros_distro": args.ros_distro,
+        "build_type": build_type,
         "ros_deps": classified["ros_deps"],
         "build_requires": classified["build_requires"],
         "unresolved": classified["unresolved"],

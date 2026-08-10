@@ -208,7 +208,9 @@ def main() -> int:
                                     projects, remap)
                 deps = sorted(set(cls["ros_deps"]))
                 for d in deps:
-                    if d in ROS_BASE_PKGS:
+                    # ros_deps 已归一化为连字符（清单规范名），ROS_BASE_PKGS 是
+                    # 下划线命名，比较前统一
+                    if d.replace("-", "_") in ROS_BASE_PKGS:
                         manifest["official_deps_rpm"].append(f"ros-{ros_distro}-{d}")
                         continue
                     c = _cascade_query(f"ros-{ros_distro}-{d}", chroot, session)
