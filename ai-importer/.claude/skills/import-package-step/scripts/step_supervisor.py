@@ -376,6 +376,39 @@ MAX_NO_OUTPUT_ROUNDS = 2
 MAX_CI_ATTEMPTS = 3
 
 
+def _derive_fail_reason(sd: Path, wf: dict, reg: dict, pkgname: str) -> str:
+    """fail 时调用方只传了包名/空串（agent 未按约定传 reason）的兜底推导。
+
+    依次取：主包 build_rpm_result 的 failure_reason / ci_errors →
+    最新 failure_analysis 的 reason → dep_registry 里的 dep error。
+    保证 workflow error（最终发给前端的失败原因）永远有实质内容。
+    """
+    br_path = sd / f"pkgs/{pkgname}/build_rpm_result.json"
+    if br_path.exists():
+        br = read_json(br_path)
+        reason = (br.get("failure_reason") or "").strip()
+        if reason:
+            return reason
+        ci_errors = br.get("ci_errors") or []
+        if ci_errors:
+            return "CI 检查未通过: " + "; ".join(str(e)[:200] for e in ci_errors[:3])
+    analyses = sorted(
+        sd.glob(f"pkgs/{pkgname}/failure_analysis_*.json"),
+        key=lambda p: p.stat().st_mtime, reverse=True)
+    for ap in analyses:
+        try:
+            reason = (read_json(ap).get("reason") or "").strip()
+        except Exception:
+            continue
+        if reason:
+            return reason
+    for dep, entry in reg.items():
+        err = (entry.get("error") or "").strip() if isinstance(entry, dict) else ""
+        if err:
+            return f"dep {dep}: {err}"
+    return "unknown failure"
+
+
 # ── fix_state.json：修复链路计数器的唯一事实来源 ─────────────────────────────
 # 计数器不能放 build_rpm_result.json（copr_client 提交、pkg-builder 自检失败都会
 # 整文件覆写，计数会被静默清零），也不能用 glob failure_analysis 文件数
@@ -1528,7 +1561,21 @@ def determine_action(sd: Path, wf: dict, reg: dict) -> tuple[str, str, int | Non
                             None)
                 return ("verify_install", PKGNAME, 0)
             ci_result = read_json(ci_result_path)
-            if ci_result.get("status") != "pass":
+            ci_status = ci_result.get("status")
+            if ci_status == "error":
+                # 环境/网络类失败（repoclosure/dnf 超时、工具缺失、脚本异常）：
+                # 包本身未必有问题，重跑 CI 而非送 fixer 误修；受 MAX_CI_ATTEMPTS 熔断
+                attempts = main_result.get("ci_attempts", 0) + 1
+                main_result["ci_attempts"] = attempts
+                write_json(main_result_path, main_result)
+                if attempts > MAX_CI_ATTEMPTS:
+                    errs = "; ".join(ci_result.get("errors", []))[:300]
+                    return ("fail",
+                            f"CI 检查连续 {attempts - 1} 次环境性失败（超时/网络），"
+                            f"构建本身已成功: {errs}",
+                            None)
+                return ("verify_install", PKGNAME, 0)
+            if ci_status != "pass":
                 main_result["status"] = "ci_failed"
                 main_result["ci_errors"] = ci_result.get("errors", [])
                 write_json(main_result_path, main_result)
@@ -1874,6 +1921,10 @@ def main() -> int:
         elif args.update_action == "fail":
             wf["goal_achieved"] = False
             wf["error"] = args.update_target
+            if not wf["error"] or wf["error"] == PKGNAME:
+                # 调用方未传有效 reason（如约定了传 reason 却传了包名）时兜底推导，
+                # 避免前端只收到一个包名作为"失败原因"
+                wf["error"] = _derive_fail_reason(sd, wf, reg, PKGNAME)
 
         wf["loop_count"] = wf.get("loop_count", 0) + 1
         write_json(wf_path, wf)

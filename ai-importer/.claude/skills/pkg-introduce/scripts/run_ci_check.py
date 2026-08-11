@@ -189,7 +189,7 @@ def run_repoclosure(pkgs: list[str], chroot: str, copr_result_url: str,
     if check.returncode != 0:
         # repoclosure 由镜像内置（dnf-utils）提供；缺失视为环境异常，
         # 显式失败而非静默跳过——跳过会让 CI 门禁形同虚设
-        return False, "repoclosure 不可用：镜像缺少 dnf-utils 包，需更新 worker 镜像"
+        return False, "[INFRA] repoclosure 不可用：镜像缺少 dnf-utils 包，需更新 worker 镜像"
 
     base = _chroot_repo_base(chroot)
     arch = _chroot_arch(chroot)
@@ -229,11 +229,24 @@ def run_repoclosure(pkgs: list[str], chroot: str, copr_result_url: str,
     for pkg in pkgs:
         cmd += ["--check", pkg]
 
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+    # 元数据要拉官方源 + EPOL + COPR + additional_repos 多个 repo，网络慢时
+    # 180s 不够（真实环境观测到分钟级），放宽到 600s 与 install 检查一致；
+    # 超时属环境/网络问题（[INFRA]），与依赖未闭合区分开，supervisor 会重跑 CI
+    # 而不是把包送进修复流程误判
+    def _run():
+        try:
+            return subprocess.run(cmd, capture_output=True, text=True, timeout=600), ""
+        except subprocess.TimeoutExpired:
+            return None, ("[INFRA] repoclosure 超时（600s）：repo 元数据拉取过慢，"
+                          "属环境/网络问题，非依赖闭合失败")
+
+    result, err = _run()
     # repodata 可能有秒级更新延迟（createrepo 刚跑完），失败时重试一次
-    if result.returncode != 0:
+    if result is None or result.returncode != 0:
         time.sleep(2)
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+        result, err = _run()
+    if result is None:
+        return False, err
     if result.returncode != 0:
         return False, (result.stdout + result.stderr).strip()
     return True, ""
@@ -305,6 +318,9 @@ def run_install_check(pkgs: list[str], chroot: str, copr_result_url: str,
     # 真实安装要下载 RPM 包体（不只是元数据），放宽超时
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    except subprocess.TimeoutExpired:
+        return False, ("[INFRA] dnf install 超时（600s）：repo 元数据/RPM 下载过慢，"
+                       "属环境/网络问题，非包不可安装")
     finally:
         shutil.rmtree(installroot, ignore_errors=True)
     if result.returncode != 0:
@@ -329,7 +345,7 @@ def run_builddep(pkg: str, spec_path: Path, chroot: str, copr_result_url: str,
     except (FileNotFoundError, subprocess.TimeoutExpired):
         unavailable = True
     if unavailable:
-        return False, "dnf builddep 不可用：镜像缺少 dnf-plugins-core 包，需更新 worker 镜像"
+        return False, "[INFRA] dnf builddep 不可用：镜像缺少 dnf-plugins-core 包，需更新 worker 镜像"
 
     base = _chroot_repo_base(chroot)
     arch = _chroot_arch(chroot)
@@ -372,6 +388,9 @@ def run_builddep(pkg: str, spec_path: Path, chroot: str, copr_result_url: str,
     # 空 installroot 需重新下载仓库元数据，放宽超时
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    except subprocess.TimeoutExpired:
+        return False, ("[INFRA] dnf builddep 超时（300s）：repo 元数据拉取过慢，"
+                       "属环境/网络问题，非 BuildRequires 不满足")
     finally:
         shutil.rmtree(installroot, ignore_errors=True)
     combined = result.stdout + result.stderr
@@ -393,7 +412,14 @@ def main() -> int:
     reports_dir.mkdir(parents=True, exist_ok=True)
 
     errors: list[str] = []
+    infra_errors: list[str] = []
     warnings: list[str] = []
+
+    def _record(prefix: str, msg: str) -> None:
+        # [INFRA] 标记环境/网络类失败（超时、工具缺失、脚本异常），
+        # 与真实检查失败区分：supervisor 对 infra 失败重跑 CI，不进修复流程
+        entry = f"{prefix}:\n{msg}"
+        (infra_errors if "[INFRA]" in msg else errors).append(entry)
 
     # 1. 获取 COPR 信息
     print("[CI] 读取 COPR 信息...")
@@ -419,7 +445,7 @@ def main() -> int:
                 print("[CI] ✓ 运行时依赖闭合检查通过")
         else:
             print("[CI] ✗ 运行时依赖闭合检查失败", file=sys.stderr)
-            errors.append(f"repoclosure 失败:\n{msg}")
+            _record("repoclosure 失败", msg)
 
         # 3. dnf install（所有包一起验证可安装性，干净 installroot 真装）
         print(f"[CI] 运行可安装性检查（{len(args.pkgs)} 个包）...")
@@ -432,7 +458,7 @@ def main() -> int:
                 print("[CI] ✓ 可安装性检查通过")
         else:
             print("[CI] ✗ 可安装性检查失败", file=sys.stderr)
-            errors.append(f"可安装性检查失败:\n{msg}")
+            _record("可安装性检查失败", msg)
 
         # 4. dnf builddep（逐包验证编译期依赖）
         # spec 在 reports_dir（= pkgs/$TARGET）下；--pkgs 传的是 SRPM/二进制名，未必等于目录名
@@ -449,22 +475,26 @@ def main() -> int:
                     print(f"[CI] ✓ {pkg} 编译期依赖检查通过")
             else:
                 print(f"[CI] ✗ {pkg} 编译期依赖检查失败", file=sys.stderr)
-                errors.append(f"{pkg} BuildRequires 不满足:\n{msg}")
+                _record(f"{pkg} BuildRequires 不满足", msg)
 
-    finally:
-        pass
+    except Exception as e:
+        # 兜底：任何未预期异常（如子进程超时泄漏）都要留下真实结果文件，
+        # 而不是让上游 agent 面对缺失/陈旧的 ci_check_result.json 自行编造内容
+        infra_errors.append(f"[INFRA] CI 脚本异常（未完成全部检查）: {e!r}")
 
     # 5. 写结果文件
-    status = "pass" if not errors else "fail"
-    result = {"status": status, "errors": errors, "warnings": warnings,
+    # status: fail=真实检查失败（进修复流程）；error=纯环境性失败（重跑 CI）
+    status = "fail" if errors else ("error" if infra_errors else "pass")
+    result = {"status": status, "errors": errors + infra_errors, "warnings": warnings,
               "chroot": chroot, "copr_result_url": copr_result_url,
               "additional_repos": additional_repos}
     out_file = reports_dir / "ci_check_result.json"
     out_file.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"[CI] 结果已写入: {out_file}")
 
-    if errors:
-        print(f"\n[CI] 门禁未通过，共 {len(errors)} 项失败", file=sys.stderr)
+    if errors or infra_errors:
+        print(f"\n[CI] 门禁未通过，共 {len(errors)} 项失败 + {len(infra_errors)} 项环境性错误",
+              file=sys.stderr)
         return 1
 
     print("[CI] 门禁全部通过")

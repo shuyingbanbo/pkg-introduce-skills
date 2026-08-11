@@ -819,7 +819,11 @@ def run_job(r, proj, job_id):
             if wf_files:
                 wf = json.loads(wf_files[0].read_text())
                 pkgname = wf.get("pkgname", "")
-                error = wf.get("error") or error
+                wf_error = wf.get("error") or ""
+                # wf["error"] 可能只写了包名（agent 未按约定传 reason），
+                # 此时 supervisor 输出的 target（具体失败原因）更有价值
+                if wf_error and wf_error != pkgname:
+                    error = wf_error
                 r.hset(f"{JOB_PREFIX}{job_id}", "built_pkgs",  " ".join(wf.get("built_pkgs", [])))
                 r.hset(f"{JOB_PREFIX}{job_id}", "reused_pkgs", " ".join(wf.get("reused_pkgs", [])))
                 r.hset(f"{JOB_PREFIX}{job_id}", "loop_count",  str(wf.get("loop_count", "")))
