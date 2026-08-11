@@ -820,9 +820,10 @@ def run_job(r, proj, job_id):
                 wf = json.loads(wf_files[0].read_text())
                 pkgname = wf.get("pkgname", "")
                 wf_error = wf.get("error") or ""
-                # wf["error"] 可能只写了包名（agent 未按约定传 reason），
+                # wf["error"] 可能只写了包名（agent 未按约定传 reason），也可能是
+                # 兜底推导失败后的占位串 "unknown failure"，
                 # 此时 supervisor 输出的 target（具体失败原因）更有价值
-                if wf_error and wf_error != pkgname:
+                if wf_error and wf_error not in (pkgname, "unknown failure"):
                     error = wf_error
                 r.hset(f"{JOB_PREFIX}{job_id}", "built_pkgs",  " ".join(wf.get("built_pkgs", [])))
                 r.hset(f"{JOB_PREFIX}{job_id}", "reused_pkgs", " ".join(wf.get("reused_pkgs", [])))

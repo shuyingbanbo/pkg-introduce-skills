@@ -376,6 +376,34 @@ MAX_NO_OUTPUT_ROUNDS = 2
 MAX_CI_ATTEMPTS = 3
 
 
+def _ci_runs_for_current_build(sd: Path) -> int:
+    """统计本次构建完成后 verify_install 实际执行完成的次数。
+
+    从 timeline.jsonl 派生：最近一次 build_main 结束（构建完成）之后的
+    verify_install action.end 数量。不用计数器递增——determine_action 每轮
+    会被 job_runner/agent 调用多次，在读路径递增会把重试预算烧在重复读取上
+    （实际只跑了一两次 CI 就熔断）。按事件顺序单遍扫描，build_main 结束
+    即重置计数，重建后自动从新构建算起。
+    """
+    timeline = sd / "timeline.jsonl"
+    if not timeline.exists():
+        return 0
+    runs = 0
+    for line in timeline.read_text(encoding="utf-8", errors="ignore").splitlines():
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if ev.get("type") != "action.end":
+            continue
+        action = (ev.get("data") or {}).get("action")
+        if action == "build_main":
+            runs = 0
+        elif action == "verify_install":
+            runs += 1
+    return runs
+
+
 def _derive_fail_reason(sd: Path, wf: dict, reg: dict, pkgname: str) -> str:
     """fail 时调用方只传了包名/空串（agent 未按约定传 reason）的兜底推导。
 
@@ -1551,13 +1579,12 @@ def determine_action(sd: Path, wf: dict, reg: dict) -> tuple[str, str, int | Non
             # CI 门禁：构建成功后必须通过（依赖闭合 + 可安装性 + 编译期依赖）
             ci_result_path = sd / f"pkgs/{PKGNAME}/ci_check_result.json"
             if not ci_result_path.exists():
-                # 防死循环：CI 结果写入路径异常时会无限重跑 verify_install
-                attempts = main_result.get("ci_attempts", 0) + 1
-                main_result["ci_attempts"] = attempts
-                write_json(main_result_path, main_result)
-                if attempts > MAX_CI_ATTEMPTS:
+                # 防死循环：CI 结果写入路径异常时会无限重跑 verify_install。
+                # 已执行次数从 timeline 派生（读路径不递增计数，避免重复调用烧掉预算）
+                attempts = _ci_runs_for_current_build(sd)
+                if attempts >= MAX_CI_ATTEMPTS:
                     return ("fail",
-                            f"ci_check_result.json 缺失，verify_install 重跑 {attempts - 1} 次仍无结果",
+                            f"ci_check_result.json 缺失，verify_install 已执行 {attempts} 次仍无结果",
                             None)
                 return ("verify_install", PKGNAME, 0)
             ci_result = read_json(ci_result_path)
@@ -1565,13 +1592,11 @@ def determine_action(sd: Path, wf: dict, reg: dict) -> tuple[str, str, int | Non
             if ci_status == "error":
                 # 环境/网络类失败（repoclosure/dnf 超时、工具缺失、脚本异常）：
                 # 包本身未必有问题，重跑 CI 而非送 fixer 误修；受 MAX_CI_ATTEMPTS 熔断
-                attempts = main_result.get("ci_attempts", 0) + 1
-                main_result["ci_attempts"] = attempts
-                write_json(main_result_path, main_result)
-                if attempts > MAX_CI_ATTEMPTS:
+                attempts = _ci_runs_for_current_build(sd)
+                if attempts >= MAX_CI_ATTEMPTS:
                     errs = "; ".join(ci_result.get("errors", []))[:300]
                     return ("fail",
-                            f"CI 检查连续 {attempts - 1} 次环境性失败（超时/网络），"
+                            f"CI 检查连续 {attempts} 次环境性失败（超时/网络），"
                             f"构建本身已成功: {errs}",
                             None)
                 return ("verify_install", PKGNAME, 0)
