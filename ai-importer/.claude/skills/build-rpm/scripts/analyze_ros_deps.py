@@ -155,6 +155,28 @@ def load_projects(ros_distro: str = "humble") -> dict:
     return projects
 
 
+def load_upstream(ros_distro: str = "humble") -> dict:
+    """加载 ros-upstream.list（rosdistro 全量清单）→ {包名: (仓库URL, 分支, 状态, 版本)}。
+
+    第二级地面真值：SIG 清单（load_projects）查不到但本清单查得到的包，
+    是"真实存在但 SIG 未移植"的包，允许注册递归构建。
+    """
+    lst = DATA_DIR / ros_distro / "ros-upstream.list"
+    upstream: dict[str, tuple[str, str, str, str]] = {}
+    if not lst.exists():
+        return upstream
+    for line in lst.read_text(encoding="utf-8", errors="ignore").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split("\t")
+        if len(parts) < 5:
+            continue
+        upstream[parts[0].strip()] = (parts[1].strip(), parts[2].strip(),
+                                      parts[3].strip(), parts[4].strip())
+    return upstream
+
+
 def load_remap() -> dict:
     """加载 pkg.remap → {deb名: rpm名}。"""
     remap = {}
@@ -172,24 +194,31 @@ def load_remap() -> dict:
 
 
 def classify_deps(dep_names: list[str], projects: dict, remap: dict,
-                  base_pkgs: set[str] | None = None) -> dict:
+                  base_pkgs: set[str] | None = None,
+                  upstream: dict | None = None) -> dict:
     """
-    三类分拣：
-      ros_deps      — 依赖名在 ros-projects.list → 待注册/缺口
-      build_requires — pkg.remap 查表命中 → 直接 BuildRequires
-      unresolved     — 都没命中 → 视为系统依赖，留给 --check-rpm 实证
+    四类分拣：
+      ros_deps          — 依赖名在 ros-projects.list（SIG 源已有）→ 待注册/缺口
+      ros_deps_upstream — 仅在 ros-upstream.list（SIG 未移植、rosdistro 真实存在）
+                          → 可注册递归构建
+      build_requires    — pkg.remap 查表命中 → 直接 BuildRequires
+      unresolved        — 都没命中 → 视为系统依赖，留给 --check-rpm 实证
     base_pkgs：openEuler 基础源已有包名集合（--check-rpm 查询结果），命中的过滤掉。
     """
+    upstream = upstream or {}
     ros_deps: list[str] = []
+    ros_deps_upstream: list[str] = []
     build_requires: list[str] = []
     unresolved: list[str] = []
     for name in sorted(set(dep_names)):
-        # package.xml 用下划线命名、ros-projects.list 用连字符：归一化后查清单，
+        # package.xml 用下划线命名、清单用连字符：归一化后查清单，
         # 命中时以清单规范名（连字符）输出（否则 rosidl_default_generators 这类
         # 名字会全部漏进 unresolved）
         norm = name.replace("_", "-")
         if norm in projects:
             ros_deps.append(norm)
+        elif norm in upstream:
+            ros_deps_upstream.append(norm)
         elif name in remap:
             build_requires.append(remap[name])
         elif norm in remap:
@@ -200,6 +229,7 @@ def classify_deps(dep_names: list[str], projects: dict, remap: dict,
             unresolved.append(name)
     return {
         "ros_deps": sorted(set(ros_deps)),
+        "ros_deps_upstream": sorted(set(ros_deps_upstream)),
         "build_requires": sorted(set(build_requires)),
         "unresolved": sorted(set(unresolved)),
     }
@@ -238,11 +268,12 @@ def main() -> int:
         parsed["deps"], parsed["buildtool_deps"] = [], []
 
     projects = load_projects(args.ros_distro)
+    upstream = load_upstream(args.ros_distro)
     remap = load_remap()
 
     # buildtool 依赖（ament_cmake 等）官方源已有（ROS SIG repo），直接进 BuildRequires 候选
     all_dep_names = parsed["deps"] + parsed["buildtool_deps"]
-    classified = classify_deps(all_dep_names, projects, remap)
+    classified = classify_deps(all_dep_names, projects, remap, upstream=upstream)
 
     # <build_type> 不是依赖标签，但决定构建工具链：
     #   ament_cmake  → 构建必须依赖 ament-cmake（清单内），补入 ros_deps
@@ -265,6 +296,7 @@ def main() -> int:
         "ros_distro": args.ros_distro,
         "build_type": build_type,
         "ros_deps": classified["ros_deps"],
+        "ros_deps_upstream": classified["ros_deps_upstream"],
         "build_requires": classified["build_requires"],
         "unresolved": classified["unresolved"],
         "test_deps": parsed["test_deps"],

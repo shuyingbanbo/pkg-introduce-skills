@@ -4,17 +4,20 @@ ROS 引包预检：定位 + gate 判定 + manifest + 伪 gate_result（ROS 链�
 
 替代 run_check+run_gate 在 ROS 语境的角色，一个脚本完成：
 
-  1. 查 ros-projects.list：包名存在性校验、`-`/`_` 归一化、定位上游仓库
+  1. 定位（三级）：ros-projects.list（SIG 源已有）→ ros-upstream.list
+     （rosdistro 真实存在、SIG 未移植）→ 用户显式 URL（自研包）；
+     用户显式 url/version 参数优先级最高
   2. sibling 展开（同仓库其他包，EUR 按仓库整体构建）
   3. gate 判定：cascade 查询 ros-humble-<pkg>（EUR → 官方源 → gitcode）
-     → 官方已有且版本满足 = reuse；落后 = upgrade；没有 = introduce_new
-  4. 依赖分拣（复用 analyze_ros_deps.classify_deps）：
-     - explicit：官方没有的依赖 → 缺口清单 missing_deps_<pkg>.txt（终止+重提闭环）
-     - deep：官方没有的依赖 → register-dep 注册（lang=ros，走现有 build 链）
+     → 官方已有且版本满足 = reuse；目标版本更新 = upgrade；没有 = introduce_new
+  4. 依赖分拣（复用 analyze_ros_deps.classify_deps，SIG 清单 + rosdistro 全量）：
+     - upstream 清单命中的依赖（SIG 未移植）→ 自动 register-dep 注册递归构建
+     - SIG 清单内的缺口：explicit → missing_deps_<pkg>.txt（终止+重提闭环）；
+       deep → register-dep 注册（lang=ros，走现有 build 链）
      - 官方已有的依赖 → manifest 的 official_deps（BuildRequires 候选）
   5. 产出三样：
-     - ros_pkg_manifest.json
-     - 伪 gate_result_<pkg>.json（decision=introduce_new, lang=ros, version=清单版本）
+     - ros_pkg_manifest.json（含 tier / target_version / repo_branch）
+     - 伪 gate_result_<pkg>.json（decision=introduce_new, lang=ros, version=目标版本）
      - missing_deps_<pkg>.txt（explicit 缺口）
 
 伪 gate_result 是融入方案的支点：supervisor 的 gate_valid 检查只认
@@ -39,7 +42,9 @@ for _p in (str(BUILD_RPM_SCRIPTS), str(SCRIPT_DIR)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from analyze_ros_deps import classify_deps, load_projects, load_remap  # noqa: E402
+from analyze_ros_deps import (  # noqa: E402
+    classify_deps, load_projects, load_remap, load_upstream,
+)
 from cascade_package_check import check_package_existence  # noqa: E402
 
 # 官方 ROS 基座包（ROS SIG repo 提供，永不注册/报缺口，直接 BuildRequires）
@@ -141,41 +146,71 @@ def main() -> int:
         print(json.dumps({"status": "failed", "reason": reason}, ensure_ascii=False))
         return 1
 
-    # ── 1. 清单定位 ─────────────────────────────────────────────────────────
+    # ── 1. 定位（两级清单 + 用户参数）───────────────────────────────────────
+    #   Tier 1: ros-projects.list（SIG 源已有）
+    #   Tier 2: ros-upstream.list（rosdistro 真实存在、SIG 未移植 → 可构建）
+    #   Tier 3: 都不在 → 用户必须显式提供 URL（自研/私有包）
+    # 用户显式参数（session.json 的 upstream_url/version）优先级最高。
     projects = load_projects(ros_distro)
     if not projects:
         return _fail(f"ros-projects.list 为空或不存在（distro={ros_distro}）")
-    if pkg not in projects:
-        return _fail(f"包不在 ros-projects.list 中: {pkg}（请核对包名/ros_distro）")
+    upstream = load_upstream(ros_distro)
+    user_url = (session.get("upstream_url") or "").strip()
+    user_ver = (session.get("version") or "").strip()
 
-    repo_url, status, listed_ver = projects[pkg]
-    siblings = sorted(k for k, v in projects.items() if v[0] == repo_url and k != pkg)
+    repo_branch = ""
+    if pkg in projects:
+        tier = "sig"
+        repo_url, status, listed_ver = projects[pkg]
+        siblings = sorted(k for k, v in projects.items() if v[0] == repo_url and k != pkg)
+    elif pkg in upstream:
+        tier = "upstream"
+        repo_url, repo_branch, status, listed_ver = upstream[pkg]
+        siblings = sorted(k for k, v in upstream.items() if v[0] == repo_url and k != pkg)
+    elif user_url:
+        tier = "user"
+        repo_url, status, listed_ver = user_url, "user_provided", ""
+        siblings = []
+    else:
+        return _fail(
+            f"包在 SIG 清单和 rosdistro 全量清单中都不存在: {pkg}"
+            f"（请核对包名/ros_distro；若是自研 ROS 包，请同时提供上游 git URL 重新提交）")
+
+    # 用户显式 URL 覆盖清单定位（fork/自研仓库）；版本优先级：用户参数 > 清单版本
+    if user_url:
+        repo_url = user_url
+    target_ver = user_ver or listed_ver
 
     # ── 2. gate 判定（主包）────────────────────────────────────────────────
     pkg_rpm = f"ros-{ros_distro}-{pkg}"
-    cascade = _cascade_query(pkg_rpm, chroot, session, version=listed_ver)
+    cascade = _cascade_query(pkg_rpm, chroot, session, version=target_ver)
     decision = cascade["decision"]
     match = cascade.get("match") or {}
     official_ver = match.get("version", "")
 
     # decision → 伪 gate_result 映射
     if _is_official(decision):
-        # 官方已有：版本一致 → reuse（写 goal_achieved，直接 done）；
-        # 落后 → upgrade（以官方 spec 为参考重建，introduce_new_with_ref）
-        if official_ver and _cmp_version(listed_ver, official_ver) < 0:
+        # 官方已有：目标版本更新 → upgrade（以官方 spec 为参考升级构建）；
+        # 官方版本 ≥ 目标版本（含目标版本为空）→ reuse（官方已满足，写
+        # goal_achieved 直接 done）
+        if target_ver and official_ver and _cmp_version(target_ver, official_ver) > 0:
             gate_decision = "introduce_new_with_ref"
+            disposition = "upgrade"
             gate_reason = (f"官方已有 ros-{ros_distro}-{pkg} {official_ver}，"
-                           f"清单版本 {listed_ver} 落后，以官方 spec 为参考升级构建")
+                           f"目标版本 {target_ver} 更新，以官方 spec 为参考升级构建")
         else:
             gate_decision = "reuse_official"
-            gate_reason = f"官方已有 ros-{ros_distro}-{pkg} {official_ver or listed_ver}，直接复用"
+            disposition = "reuse"
+            gate_reason = f"官方已有 ros-{ros_distro}-{pkg} {official_ver or target_ver}，直接复用"
     elif decision == "introduce_new_with_ref":
         gate_decision = "introduce_new_with_ref"
+        disposition = "introduce_new"
         ref = cascade.get("reference") or {}
         gate_reason = (f"以参考 spec 为起点构建："
                        f"{ref.get('source', 'unknown')} {ref.get('gitcode_repo', '')}")
     else:
         gate_decision = "introduce_new"
+        disposition = "introduce_new"
         gate_reason = "官方源未找到，从头构建"
 
     # ── 3. 依赖分拣（package.xml 可能尚缺：deep 模式由递归 evaluate 补全）────
@@ -184,9 +219,12 @@ def main() -> int:
     manifest = {
         "pkgname": pkg,
         "ros_distro": ros_distro,
+        "tier": tier,
         "repo_url": repo_url,
+        "repo_branch": repo_branch,
         "repo_status": status,
         "listed_version": listed_ver,
+        "target_version": target_ver,
         "siblings": siblings,
         "gate_decision": gate_decision,
         "official_deps": [],
@@ -205,9 +243,10 @@ def main() -> int:
             if parsed["found"]:
                 remap = load_remap()
                 cls = classify_deps(parsed["deps"] + parsed["buildtool_deps"],
-                                    projects, remap)
-                deps = sorted(set(cls["ros_deps"]))
-                for d in deps:
+                                    projects, remap, upstream=upstream)
+                # SIG 清单内依赖 + rosdistro 全量清单内依赖（SIG 未移植）统一处理；
+                # 区别在于注册时 URL 来源与是否要求 --deep
+                for d in sorted(set(cls["ros_deps"]) | set(cls["ros_deps_upstream"])):
                     # ros_deps 已归一化为连字符（清单规范名），ROS_BASE_PKGS 是
                     # 下划线命名，比较前统一
                     if d.replace("-", "_") in ROS_BASE_PKGS:
@@ -217,11 +256,17 @@ def main() -> int:
                     if _is_official(c["decision"]):
                         manifest["official_deps"].append(d)
                         manifest["official_deps_rpm"].append(f"ros-{ros_distro}-{d}")
-                    elif args.deep:
+                        continue
+                    # upstream 命中的依赖（SIG 未移植）自动注册递归构建，无论
+                    # 是否 --deep；SIG 清单内的缺口维持原语义（--deep 才注册）
+                    is_upstream_dep = d in cls["ros_deps_upstream"]
+                    if is_upstream_dep or args.deep:
+                        dep_url = (upstream[d][0] if is_upstream_dep
+                                   else projects[d][0])
                         rc = subprocess.run(
                             [sys.executable, str(SCRIPT_DIR / "register-dep.py"),
                              "--session-dir", str(sd), "--pkg", f"ros-{ros_distro}-{d}",
-                             "--url", projects[d][0], "--lang", "ros",
+                             "--url", dep_url, "--lang", "ros",
                              "--required-by", pkg],
                             capture_output=True, text=True, timeout=30,
                         )
@@ -262,11 +307,14 @@ def main() -> int:
     _write_json(gate_path, {
         "pkgname": pkg,
         "lang": "ros",
-        "version": listed_ver,
+        "version": target_ver,
         "overall_status": "done",
+        # 结构化处置：reuse（官方已满足）/ upgrade（官方有旧版，构建新版）/
+        # introduce_new（官方没有，新构建）——job_runner 回写 Redis 供前端展示
+        "disposition": disposition,
         "result": {
             "lang": "ros",
-            "version": listed_ver,
+            "version": target_ver,
             "decision": gate_decision,
             "reason": gate_reason,
             "repo_url": repo_url,
@@ -279,8 +327,9 @@ def main() -> int:
     print(json.dumps({
         "status": "done",
         "pkgname": pkg,
+        "tier": tier,
         "gate_decision": gate_decision,
-        "listed_version": listed_ver,
+        "target_version": target_ver,
         "official_deps": manifest["official_deps"],
         "missing_deps": manifest["missing_deps"],
         "registered_deps": manifest["registered_deps"],

@@ -73,17 +73,33 @@ def main() -> int:
 
     # ── 1. 从 manifest 定位仓库 ─────────────────────────────────────────────
     manifest_path = sd / "pkgs" / pkg / "ros_pkg_manifest.json"
+    repo_branch = ""
+    target_version = ""
+    listed_version = ""
+    tier = "sig"
     if manifest_path.exists():
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         repo_url = manifest.get("repo_url", "")
+        repo_branch = manifest.get("repo_branch", "")
+        target_version = manifest.get("target_version", "")
+        listed_version = manifest.get("listed_version", "")
+        tier = manifest.get("tier", "sig")
     else:
-        # 无 manifest（异常路径）：直接查清单
-        lst = DATA_DIR / args.ros_distro / "ros-projects.list"
+        # 无 manifest（异常路径）：依次查 SIG 清单、rosdistro 全量清单
         repo_url = ""
-        for line in lst.read_text(encoding="utf-8", errors="ignore").splitlines():
-            parts = line.strip().split("\t")
-            if len(parts) >= 4 and parts[0].strip() == pkg:
-                repo_url = parts[1].strip()
+        for fname in ("ros-projects.list", "ros-upstream.list"):
+            lst = DATA_DIR / args.ros_distro / fname
+            if not lst.exists():
+                continue
+            for line in lst.read_text(encoding="utf-8", errors="ignore").splitlines():
+                parts = line.strip().split("\t")
+                if len(parts) >= 4 and parts[0].strip() == pkg:
+                    repo_url = parts[1].strip()
+                    if fname == "ros-upstream.list" and len(parts) >= 5:
+                        repo_branch = parts[2].strip()
+                        target_version = parts[4].strip()
+                    break
+            if repo_url:
                 break
     if not repo_url:
         print(f"[ERROR] 无法定位 {pkg} 的上游仓库", file=sys.stderr)
@@ -97,9 +113,18 @@ def main() -> int:
         print(f"[ros_fetch] ros-url-fix 命中: {pkg} → {url_fix[pkg]}")
         repo_url = url_fix[pkg]
     git_url, branch = _parse_repo_url(repo_url)
+    # upstream/user  tier 的 URL 是纯仓库地址，分支来自 manifest/清单的独立列
+    if repo_branch and "/tree/" not in repo_url:
+        branch = repo_branch
     if pkg in ver_fix:
         branch = ver_fix[pkg]
         print(f"[ros_fetch] ros-version-fix 命中: {pkg} → checkout {branch}")
+    # 目标版本 tag 优先：清单外包（upstream/user tier）或用户显式指定版本
+    # （target != listed，升级场景）时，先尝试 checkout 版本号对应的 tag，
+    # 拉不到再回退分支（tag 命名不统一是上游现实，见方案风险点）
+    ver_tag = ""
+    if target_version and (tier != "sig" or target_version != listed_version):
+        ver_tag = target_version.split("-", 1)[0].strip()
 
     # ── 3. cache 优先，缺则 clone ───────────────────────────────────────────
     cache_base = Path(os.environ.get("ROS_UPSTREAM_CACHE", "/app/upstream_cache"))
@@ -110,23 +135,49 @@ def main() -> int:
     if cache_src.is_dir():
         print(f"[ros_fetch] 从 cache 拷贝: {cache_src}")
         shutil.copytree(cache_src, src_dir, dirs_exist_ok=True)
-        # cache 分支可能与目标分支不一致（version-fix 场景）：重新 checkout
+        # cache 分支可能与目标分支不一致（version-fix 场景）：重新 checkout；
+        # ver_tag 优先（见上），tag 不存在回退分支
         try:
-            subprocess.run(["git", "-C", str(src_dir), "checkout", branch, "--"],
-                           capture_output=True, text=True, timeout=120)
+            if ver_tag:
+                rc = subprocess.run(["git", "-C", str(src_dir), "checkout", ver_tag, "--"],
+                                    capture_output=True, text=True, timeout=120)
+                if rc.returncode != 0:
+                    print(f"[ros_fetch] tag {ver_tag} 不存在，回退分支 {branch}",
+                          file=sys.stderr)
+                    subprocess.run(["git", "-C", str(src_dir), "checkout", branch, "--"],
+                                   capture_output=True, text=True, timeout=120)
+            else:
+                subprocess.run(["git", "-C", str(src_dir), "checkout", branch, "--"],
+                               capture_output=True, text=True, timeout=120)
             subprocess.run(["git", "-C", str(src_dir), "submodule", "update",
                             "--init", "--recursive", "--depth", "1"],
                            capture_output=True, text=True, timeout=600)
         except Exception as exc:
             print(f"[ros_fetch] WARN checkout branch failed: {exc}", file=sys.stderr)
     else:
-        print(f"[ros_fetch] cache 未命中 {cache_src}，直接 clone {git_url}@{branch}")
+        print(f"[ros_fetch] cache 未命中 {cache_src}，直接 clone {git_url}@{ver_tag or branch}")
         try:
-            rc = subprocess.run(
-                ["git", "clone", "--depth", "1", "--branch", branch,
-                 "--recursive", git_url, str(src_dir)],
-                capture_output=True, text=True, timeout=900,
-            )
+            if ver_tag:
+                rc = subprocess.run(
+                    ["git", "clone", "--depth", "1", "--branch", ver_tag,
+                     "--recursive", git_url, str(src_dir)],
+                    capture_output=True, text=True, timeout=900,
+                )
+                if rc.returncode != 0:
+                    print(f"[ros_fetch] tag {ver_tag} clone 失败，回退分支 {branch}",
+                          file=sys.stderr)
+                    shutil.rmtree(src_dir, ignore_errors=True)
+                    rc = subprocess.run(
+                        ["git", "clone", "--depth", "1", "--branch", branch,
+                         "--recursive", git_url, str(src_dir)],
+                        capture_output=True, text=True, timeout=900,
+                    )
+            else:
+                rc = subprocess.run(
+                    ["git", "clone", "--depth", "1", "--branch", branch,
+                     "--recursive", git_url, str(src_dir)],
+                    capture_output=True, text=True, timeout=900,
+                )
             if rc.returncode != 0:
                 print(f"[ERROR] clone 失败: {rc.stderr.strip()[:300]}", file=sys.stderr)
                 return 1

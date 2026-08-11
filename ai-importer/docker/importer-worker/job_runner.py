@@ -224,6 +224,33 @@ def _collect_chroot_status(session_dir: Path, job_status: str = "") -> dict:
         return {}
 
 
+def _collect_pkg_decisions(session_dir: Path) -> dict:
+    """收集每个包的结构化处置（reuse/upgrade/introduce_new + 版本 + 原因）。
+
+    数据源：pkgs/*/gate_result_*.json。ROS 链的伪 gate_result（ros_prep.py）
+    显式带 disposition 字段；常规链的 gate_result 没有，按 decision 前缀推导。
+    供前端展示"这个包是复用/升级/新构建"。
+    """
+    dispos = {}
+    for g in sorted(session_dir.glob("pkgs/*/gate_result_*.json")):
+        try:
+            gd = json.loads(g.read_text(encoding="utf-8", errors="ignore"))
+            res = gd.get("result") or {}
+            name = gd.get("pkgname") or g.parent.name
+            disp = gd.get("disposition") or ""
+            if not disp:
+                dec = res.get("decision", "") or ""
+                disp = "reuse" if dec.startswith("reuse") else "introduce_new"
+            dispos[name] = {
+                "disposition": disp,
+                "version": gd.get("version", "") or res.get("version", ""),
+                "reason": res.get("reason", ""),
+            }
+        except Exception:
+            pass
+    return dispos
+
+
 def _finish(r, job_id, status, error="", chroot_status=None):
     _log(r, job_id, f"[引包] 完成  status={status}" + (f"  error={error}" if error else ""))
     r.hset(f"{JOB_PREFIX}{job_id}", "status", status)
@@ -804,6 +831,11 @@ def run_job(r, proj, job_id):
                 r.hset(f"{JOB_PREFIX}{job_id}", "reused_pkgs", " ".join(wf.get("reused_pkgs", [])))
                 r.hset(f"{JOB_PREFIX}{job_id}", "loop_count",  str(wf.get("loop_count", "")))
                 r.hset(f"{JOB_PREFIX}{job_id}", "error",       "")
+                # 每包处置（reuse/upgrade/introduce_new）回写，前端展示
+                dispos = _collect_pkg_decisions(session_dir)
+                if dispos:
+                    r.hset(f"{JOB_PREFIX}{job_id}", "pkg_decisions",
+                           json.dumps(dispos, ensure_ascii=False))
                 # 读 summary 报告写入 Redis
                 if pkgname:
                     report_path = session_dir / f"pkgs/{pkgname}/{pkgname}_introduction_report.md"
@@ -829,6 +861,11 @@ def run_job(r, proj, job_id):
                 r.hset(f"{JOB_PREFIX}{job_id}", "reused_pkgs", " ".join(wf.get("reused_pkgs", [])))
                 r.hset(f"{JOB_PREFIX}{job_id}", "loop_count",  str(wf.get("loop_count", "")))
                 r.hset(f"{JOB_PREFIX}{job_id}", "error",       error)
+                # 每包处置（reuse/upgrade/introduce_new）回写，前端展示
+                dispos = _collect_pkg_decisions(session_dir)
+                if dispos:
+                    r.hset(f"{JOB_PREFIX}{job_id}", "pkg_decisions",
+                           json.dumps(dispos, ensure_ascii=False))
                 # ROS explicit 缺口：读 missing_deps 清单回写 hash（前端渲染可点击 tag）
                 if mode == "ros":
                     _missing_path = session_dir / f"pkgs/{pkgname}/missing_deps_{pkgname}.txt"

@@ -128,23 +128,37 @@ def main():
               f"Adapt spec/source to the chroot toolchain version instead.", file=sys.stderr)
         sys.exit(2)
 
-    # ROS 依赖名硬校验：ros-<distro>-<name> 必须在 ros-projects.list 中真实存在。
-    # 不存在 = spec 里的幻觉依赖名——递归构建造不出清单外的 ROS 包，只会逼 agent
-    # 交差（历史教训：ros-humble-ament-python 被"构建"成 README-only 空壳包）。
-    # 正确动作是修 spec 的依赖名，不是注册。
+    # ROS 依赖名两级校验：ros-<distro>-<name> 必须真实存在——
+    #   Tier 1: ros-projects.list（SIG 源已有）→ 正常注册
+    #   Tier 2: 仅 ros-upstream.list（rosdistro 真实存在、SIG 未移植）→ 放行注册，
+    #           URL 缺省时自动从 upstream 清单补（递归构建 SIG 未覆盖的包）
+    #   两级都查不到 = spec 里的幻觉依赖名——拒绝注册（历史教训：
+    #   ros-humble-ament-python 被"构建"成 README-only 空壳包）。
     from ros_dep_guard import (  # noqa: E402
-        format_invalid_report, lookup_ros_dep, split_ros_name, suggest_ros_names,
+        format_invalid_report, lookup_ros_dep, lookup_upstream_dep,
+        split_ros_name, suggest_ros_names,
     )
-    from analyze_ros_deps import load_projects  # noqa: E402
+    from analyze_ros_deps import load_projects, load_upstream  # noqa: E402
     ros_parts = split_ros_name(args.pkg)
     if ros_parts:
         ros_distro, ros_name = ros_parts
         projects = load_projects(ros_distro)
         if projects and lookup_ros_dep(ros_name, projects) is None:
-            bad = {ros_name: suggest_ros_names(ros_name, projects)}
-            print(f"[register-dep] ERROR: 拒绝注册。\n{format_invalid_report(bad, ros_distro)}",
-                  file=sys.stderr)
-            sys.exit(3)
+            upstream = load_upstream(ros_distro)
+            if lookup_upstream_dep(ros_name, upstream) is not None:
+                if not args.url:
+                    args.url = upstream[lookup_upstream_dep(ros_name, upstream)][0]
+                if not args.lang:
+                    # 对齐 ros_prep deep 模式：supervisor 对 lang=ros 的 dep
+                    # 跳过普通 evaluate，注册即 evaluate_done
+                    args.lang = "ros"
+                print(f"[register-dep] INFO: {args.pkg} SIG 源未移植（rosdistro 真实存在），"
+                      f"注册递归构建，url={args.url!r}", file=sys.stderr)
+            else:
+                bad = {ros_name: suggest_ros_names(ros_name, projects)}
+                print(f"[register-dep] ERROR: 拒绝注册。\n{format_invalid_report(bad, ros_distro)}",
+                      file=sys.stderr)
+                sys.exit(3)
 
     reg_path = Path(args.session_dir) / "dep_registry.json"
     reg = json.loads(reg_path.read_text(encoding="utf-8")) if reg_path.exists() else {}
