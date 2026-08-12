@@ -276,6 +276,9 @@ def _poll_copr_build_chroots(build_id: int, sd: Path) -> dict[str, str] | None:
 
 
 def write_json(path: Path, data: dict[str, Any]) -> None:
+    # 目录可能尚不存在（ROS dep 的伪 gate_result 写入时 pkgs/<dep>/ 未建立），
+    # 写文件一律先补父目录
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
