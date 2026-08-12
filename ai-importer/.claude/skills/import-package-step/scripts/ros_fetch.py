@@ -51,6 +51,34 @@ def _load_map(path: Path) -> dict:
     return m
 
 
+def _reregister_deps(sd: Path, pkg: str) -> None:
+    """源码就位后补跑 ros_prep 的依赖分析/注册（幂等）。
+
+    ros_prep 首次运行在 ros_fetch 之前，sources 为空时依赖分析静默跳过，
+    upstream 依赖会因此漏注册（smach-ros 残废包事故：构建成功但 spec 无
+    smach/smach-msgs 依赖）。fetch 完成后重跑 ros_prep，补齐 manifest 的
+    registered_deps 与 dep_registry。
+    """
+    cmd = [sys.executable, str(SCRIPT_DIR / "ros_prep.py"),
+           "--pkg", pkg, "--session-dir", str(sd)]
+    try:
+        sess = json.loads((sd / "session.json").read_text(encoding="utf-8"))
+        deep = sess.get("deep_dependency")
+        if deep is True or str(deep) in ("1", "true"):
+            cmd.append("--deep")
+    except Exception:
+        pass
+    try:
+        rc = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+        if rc.returncode != 0:
+            print(f"[ros_fetch] WARN 依赖补注册失败: {rc.stderr.strip()[:200]}",
+                  file=sys.stderr)
+        else:
+            print("[ros_fetch] 依赖补注册完成（ros_prep 重跑）")
+    except Exception as exc:
+        print(f"[ros_fetch] WARN 依赖补注册异常: {exc}", file=sys.stderr)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="ROS 源码获取")
     parser.add_argument("--pkg", required=True)
@@ -69,6 +97,7 @@ def main() -> int:
     src_dir = sd / "sources" / pkg
     if src_dir.is_dir() and any(src_dir.iterdir()):
         print(f"[ros_fetch] 源码已存在: {src_dir}")
+        _reregister_deps(sd, pkg)
         return 0
 
     # ── 1. 从 manifest 定位仓库 ─────────────────────────────────────────────
@@ -192,6 +221,9 @@ def main() -> int:
         ref_dir.mkdir(parents=True, exist_ok=True)
         shutil.copy2(spec_cache, ref_dir / f"{pkg}.spec")
         print(f"[ros_fetch] spec 基线已拷入 reference/: {spec_cache.name}")
+
+    # ── 5. 依赖补注册（源码就位后 ros_prep 幂等重跑，见函数注释）────────────
+    _reregister_deps(sd, pkg)
 
     print(f"[ros_fetch] done: {src_dir}")
     return 0
