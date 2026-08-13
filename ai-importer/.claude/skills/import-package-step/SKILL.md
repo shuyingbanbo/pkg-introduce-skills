@@ -172,6 +172,9 @@ print('\n'.join(f'{k}: {v}' for k, v in json.load(open('$SESSION_DIR/pkgs/$PKGNA
 
 verify_install)
   # 构建成功后：CI 门禁（依赖闭合 + 可安装性 + 编译期依赖）
+  # ⚠️ 本步骤 Bash 必须显式设置 timeout ≥ 900000ms：run_ci_check.py 内部
+  # repoclosure/dnf 子命令超时为 600s，agent Bash 默认 300s 会把脚本杀掉，
+  # 然后诱发 agent 代写一个 status=timeout 的假 ci_check_result.json（实踩事故）
   echo "[step] 运行 CI 门禁检查..."
   eval "$(python3 $SCRIPTS_DIR/read-session.py --session-dir $SESSION_DIR)"
   _BID=$(python3 -c "import json; print(json.load(open('$SESSION_DIR/pkgs/$TARGET/build_rpm_result.json')).get('copr_build_id',''))" 2>/dev/null)

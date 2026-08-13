@@ -1592,9 +1592,11 @@ def determine_action(sd: Path, wf: dict, reg: dict) -> tuple[str, str, int | Non
                 return ("verify_install", PKGNAME, 0)
             ci_result = read_json(ci_result_path)
             ci_status = ci_result.get("status")
-            if ci_status == "error":
+            if ci_status in ("error", "timeout"):
                 # 环境/网络类失败（repoclosure/dnf 超时、工具缺失、脚本异常）：
-                # 包本身未必有问题，重跑 CI 而非送 fixer 误修；受 MAX_CI_ATTEMPTS 熔断
+                # 包本身未必有问题，重跑 CI 而非送 fixer 误修；受 MAX_CI_ATTEMPTS 熔断。
+                # "timeout" 是 agent 侧 Bash 300s 超时杀掉 run_ci_check.py 后
+                # 代写的结果（run_ci_check 自身只会写 pass/fail/error），同属环境性
                 attempts = _ci_runs_for_current_build(sd)
                 if attempts >= MAX_CI_ATTEMPTS:
                     errs = "; ".join(ci_result.get("errors", []))[:300]

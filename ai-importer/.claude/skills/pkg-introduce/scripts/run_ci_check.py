@@ -36,17 +36,20 @@ import time
 from pathlib import Path
 
 # openEuler chroot name → repo base URL
+# 用华为云镜像而非 repo.openeuler.org：worker pod 集群在华为云 cn-north-4，
+# 直连官方源（解析到 dl-cdn）元数据只有 ~177kB/s、包体频繁 Curl error (28)，
+# CI 门禁实测 1816s 且下载失败；华为云镜像同路径 2MB/s。版本目录已全量验证
 _CHROOT_REPO_MAP = {
-    "openeuler-22.03_LTS-":      "http://repo.openeuler.org/openEuler-22.03-LTS",
-    "openeuler-22.03_LTS_SP1-":  "http://repo.openeuler.org/openEuler-22.03-LTS-SP1",
-    "openeuler-22.03_LTS_SP2-":  "http://repo.openeuler.org/openEuler-22.03-LTS-SP2",
-    "openeuler-22.03_LTS_SP3-":  "http://repo.openeuler.org/openEuler-22.03-LTS-SP3",
-    "openeuler-22.03_LTS_SP4-":  "http://repo.openeuler.org/openEuler-22.03-LTS-SP4",
-    "openeuler-24.03_LTS-":      "http://repo.openeuler.org/openEuler-24.03-LTS",
-    "openeuler-24.03_LTS_SP1-":  "http://repo.openeuler.org/openEuler-24.03-LTS-SP1",
-    "openeuler-24.03_LTS_SP2-":  "http://repo.openeuler.org/openEuler-24.03-LTS-SP2",
-    "openeuler-24.03_LTS_SP3-":  "http://repo.openeuler.org/openEuler-24.03-LTS-SP3",
-    "openeuler-24.03_LTS_SP4-":  "http://repo.openeuler.org/openEuler-24.03-LTS-SP4",
+    "openeuler-22.03_LTS-":      "https://repo.huaweicloud.com/openeuler/openEuler-22.03-LTS",
+    "openeuler-22.03_LTS_SP1-":  "https://repo.huaweicloud.com/openeuler/openEuler-22.03-LTS-SP1",
+    "openeuler-22.03_LTS_SP2-":  "https://repo.huaweicloud.com/openeuler/openEuler-22.03-LTS-SP2",
+    "openeuler-22.03_LTS_SP3-":  "https://repo.huaweicloud.com/openeuler/openEuler-22.03-LTS-SP3",
+    "openeuler-22.03_LTS_SP4-":  "https://repo.huaweicloud.com/openeuler/openEuler-22.03-LTS-SP4",
+    "openeuler-24.03_LTS-":      "https://repo.huaweicloud.com/openeuler/openEuler-24.03-LTS",
+    "openeuler-24.03_LTS_SP1-":  "https://repo.huaweicloud.com/openeuler/openEuler-24.03-LTS-SP1",
+    "openeuler-24.03_LTS_SP2-":  "https://repo.huaweicloud.com/openeuler/openEuler-24.03-LTS-SP2",
+    "openeuler-24.03_LTS_SP3-":  "https://repo.huaweicloud.com/openeuler/openEuler-24.03-LTS-SP3",
+    "openeuler-24.03_LTS_SP4-":  "https://repo.huaweicloud.com/openeuler/openEuler-24.03-LTS-SP4",
 }
 
 
