@@ -739,6 +739,8 @@ def _cascade_decision_to_action(decision: str, has_upstream_url: bool) -> tuple[
         return ("recurse", "EUR 已有匹配版本（chroot 一致），以 EUR SRPM 为参考重建到用户 project")
     elif decision in ("reuse_official",):
         return ("resolved", "openEuler 官方源版本满足要求，直接复用")
+    elif decision in ("reuse_additional_repo",):
+        return ("resolved", "项目 additional_repos（外挂源）已有满足要求的版本，直接复用")
     elif decision in ("evaluate",):
         return ("recurse", "openEuler 官方源版本不满足要求，需引入更高版本")
     elif decision in ("introduce_new_with_ref",):
@@ -756,6 +758,7 @@ _CASCADE_TO_PRECHECK_DECISION = {
     "reuse_copr_project": "reuse_user_repo",
     "reuse_eur_srpm": "introduce_new",
     "reuse_official": "reuse_official",
+    "reuse_additional_repo": "reuse_official",
     "evaluate": "block_official_older",
     "introduce_new_with_ref": "introduce_new",
     "introduce_new": "introduce_new",
@@ -776,19 +779,20 @@ def _build_existing_check_from_cascade(cascade: dict, dep: dict) -> dict:
 
     # 从级联层级推断包在官方源中的存在性（参考源/全新引入显然不在官方源）
     official_exists = (
-        cascade_level <= 2 or cascade_decision in ("evaluate",)
+        cascade_level <= 2 or cascade_decision in ("evaluate", "reuse_additional_repo")
     ) and cascade_decision not in ("introduce_new_with_ref", "introduce_new")
     official_version = ""
     if cascade_level == 0:
         official_version = cascade_match.get("version", "")
     elif cascade_level == 1:
         official_version = cascade_match.get("version", "")
-    elif cascade_level <= 2:
-        official_version = cascade_match.get("version", "")
+    elif cascade_level <= 2 or cascade_decision == "reuse_additional_repo":
+        official_version = cascade_match.get("version", "") or cascade.get("version", "")
 
     # reuse_eur_srpm 不算 meets_need：依赖路径上它被映射为 introduce_new
     # 走递归重建，EUR 里的包并不能直接满足需求
-    meets_need = cascade_decision in ("reuse_official", "reuse_copr_project")
+    meets_need = cascade_decision in ("reuse_official", "reuse_copr_project",
+                                      "reuse_additional_repo")
 
     return {
         "official": {

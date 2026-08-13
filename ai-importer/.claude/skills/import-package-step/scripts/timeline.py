@@ -168,7 +168,8 @@ def _snapshot_statuses(session_dir: Path) -> dict[str, str]:
                         try:
                             g = json.loads(gate_path.read_text(encoding="utf-8"))
                             decision = (g.get("result") or {}).get("decision", "")
-                            if decision in ("reuse_official", "reuse_copr_project"):
+                            if decision in ("reuse_official", "reuse_copr_project",
+                                            "reuse_additional_repo"):
                                 snap[pkgname] = "main:reused"
                             else:
                                 snap[pkgname] = "main:evaluated"

@@ -147,7 +147,7 @@ case "$GATE_DECISION" in
 esac
 ```
 
-- 脚本对每个依赖做 4 级级联检查（与主包同一套 `cascade_package_check`）。
+- 脚本对每个依赖做级联检查（与主包同一套 `cascade_package_check`：L0 用户 project → L5 项目 additional_repos 外挂源 → L2 官方源 → L1 EUR → L3 gitcode）。
 - 需要引入的依赖（级联 decision = `evaluate` / `introduce_new_with_ref` / `introduce_new`）调 `register-dep.py` 写入 `dep_registry.json`。
 - 输出摘要：`reports/evaluate_deps_<pkg>.json`。
 

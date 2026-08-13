@@ -115,7 +115,8 @@ def _cascade_query(pkg_rpm: str, chroot: str, session: dict,
 
 
 def _is_official(decision: str) -> bool:
-    return decision in ("reuse_official", "reuse_eur_srpm", "reuse_copr_project")
+    return decision in ("reuse_official", "reuse_eur_srpm", "reuse_copr_project",
+                        "reuse_additional_repo")
 
 
 def main() -> int:

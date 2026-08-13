@@ -967,6 +967,7 @@ def determine_action(sd: Path, wf: dict, reg: dict) -> tuple[str, str, int | Non
             if g.get("overall_status") == "done" and \
                decision in ("introduce_new", "introduce_new_with_ref",
                             "reuse_official", "reuse_copr_project",
+                            "reuse_additional_repo",
                             "reuse_eur_srpm", "evaluate", "upgrade_user_repo"):
                 gate_valid = True
             elif decision == "check_failed":
@@ -1669,7 +1670,8 @@ def _downgrade_stale_deps(sd: Path, reg: dict) -> bool:
 def update_after_evaluate_main(sd: Path, wf: dict, wf_path: Path, gate_decision: str) -> None:
     """主包 evaluate_main 完成后更新 workflow。"""
     PKGNAME = wf["pkgname"]
-    if gate_decision in ("reuse_official", "reuse_copr_project"):
+    if gate_decision in ("reuse_official", "reuse_copr_project",
+                         "reuse_additional_repo"):
         wf.setdefault("reused_pkgs", [])
         if PKGNAME not in wf["reused_pkgs"]:
             wf["reused_pkgs"].append(PKGNAME)
@@ -1687,7 +1689,8 @@ def update_after_evaluate_main(sd: Path, wf: dict, wf_path: Path, gate_decision:
 
 def update_after_evaluate(sd: Path, reg: dict, reg_path: Path, target: str, gate_decision: str) -> None:
     """evaluate 完成后更新 dep_registry。"""
-    if gate_decision in ("reuse_official", "reuse_copr_project"):
+    if gate_decision in ("reuse_official", "reuse_copr_project",
+                         "reuse_additional_repo"):
         reg[target]["status"] = "reused"
         # 记录实际解析版本，用于后续约束降级检查
         v = _get_resolved_version(sd, target)

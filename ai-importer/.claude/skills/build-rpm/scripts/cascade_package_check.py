@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
-"""4 级级联包存在性检查。
+"""级联包存在性检查。
 
 在 evaluate 阶段调用，统一替换独立的 check_existing_package.py（Level 2）
 和 fetch_reference_spec.py（Level 3）查询。
 
-4 级查找：
+查找级别：
+  Level 0 — 用户 COPR project（自己的已成功构建）
+  Level 5 — 项目 additional_repos（项目级外挂源，如 ROS SIG 源）
+     dnf repoquery 直查外挂源 → 有满足版本的包 → 直接复用
+     （执行顺序在 L0 之后、L2 之前；编号 5 不打乱既有 level 语义）
   Level 1 — EUR Repo (https://eur.openeuler.openatom.cn)
      fulltext search → 扫描 results 目录 → 下载 SRPM 重建
   Level 2 — openEuler 目标版本 (dnf repoquery)
@@ -32,6 +36,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import platform
 import re
 import subprocess
 import sys
@@ -433,6 +438,94 @@ def _check_src_openeuler(pkgname: str, lang: str, target: str = "") -> Optional[
     return None
 
 
+# ── Level 5: 项目 additional_repos（外挂源）───────────────────────────────────
+# 项目级外挂源（如 ROS SIG 源）由 COPR 后端在构建时挂进 chroot（report806 方案 B），
+# CI 门禁也已挂同一组源；存在性判定不查它们，会把外挂源里现成的包误判为缺失而
+# 从源头重建（实测 ouster-ros 会话因此重建了半个 ROS 核心栈，4h 超时）。
+
+_ADDITIONAL_REPOS_CACHE: dict = {}
+
+
+def _get_project_additional_repos(copr_url: str, owner: str, project: str,
+                                  login: str, token: str) -> list[str]:
+    """GET api_3/project 拿项目级 additional_repos，进程内缓存（每个依赖都会走级联，
+    不缓存会对同一项目重复发 API 请求）。"""
+    if not (copr_url and owner and project and login and token):
+        return []
+    key = (copr_url, owner, project)
+    if key in _ADDITIONAL_REPOS_CACHE:
+        return _ADDITIONAL_REPOS_CACHE[key]
+    repos: list[str] = []
+    try:
+        import base64
+        creds = base64.b64encode(f"{login}:{token}".encode()).decode()
+        url = (f"{copr_url.rstrip('/')}/api_3/project"
+               f"?ownername={urllib.parse.quote(owner)}"
+               f"&projectname={urllib.parse.quote(project)}")
+        req = urllib.request.Request(url, headers={"Authorization": f"Basic {creds}"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            data = json.loads(r.read())
+        repos = [u.strip() for u in (data.get("additional_repos") or [])
+                 if isinstance(u, str) and u.strip()]
+    except Exception as e:
+        print(f"[cascade] WARN 获取项目 additional_repos 失败: {e}", file=sys.stderr)
+    _ADDITIONAL_REPOS_CACHE[key] = repos
+    return repos
+
+
+def _check_additional_repos(pkgname: str, lang: str, repos: list[str],
+                            target: str, version: str,
+                            requirement: str) -> Optional[dict]:
+    """用 dnf repoquery 查项目 additional_repos 中是否有满足版本要求的包。
+
+    命中且版本满足 → reuse_additional_repo；查询失败/超时按未命中继续级联
+    （保守方向是构建，不会把不存在的包误判为可复用）。
+    """
+    query_name = get_srpm_name(lang, pkgname) if lang else pkgname
+    _, arch = _split_chroot(target)
+    for i, raw_url in enumerate(repos):
+        url = raw_url
+        if not url.startswith(("http://", "https://")):
+            continue  # copr:// 等形式暂不支持
+        if arch:
+            url = url.replace("$basearch", arch)
+        repoid = f"cascade-extra-{i}"
+        cmd = ["dnf", "repoquery", "--quiet",
+               "--repofrompath", f"{repoid},{url}",
+               "--disablerepo=*", f"--enablerepo={repoid}",
+               "--qf", "%{version}"]
+        # 跨架构（x86_64 pod 查 aarch64 chroot）按目标架构过滤，与 run_ci_check 一致
+        if arch and arch != platform.machine():
+            cmd.append(f"--forcearch={arch}")
+        cmd.append(query_name)
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            print(f"[cascade] WARN additional repo 查询异常({repoid} {url}): {e}",
+                  file=sys.stderr)
+            continue
+        if proc.returncode != 0:
+            print(f"[cascade] WARN additional repo 查询失败({repoid} {url}): "
+                  f"{proc.stderr.strip()[:200]}", file=sys.stderr)
+            continue
+        versions = [v.strip() for v in proc.stdout.splitlines() if v.strip()]
+        best = None
+        for v in versions:
+            if best is None or _checker.compare_versions(v, best) > 0:
+                best = v
+        # 版本防线：与 L0/L2 同一套 _version_satisfies，老版本不误判可复用
+        if best and _version_satisfies(best, version, requirement):
+            return {
+                "level": 5,
+                "decision": "reuse_additional_repo",
+                "rpm_name": query_name,
+                "version": best,
+                "source": url,
+                "match": {"source": url, "version": best, "repo": repoid},
+            }
+    return None
+
+
 # ── Level 0: 用户 COPR project ─────────────────────────────────────────────────
 
 def _check_user_copr_project(pkgname: str, copr_url: str, owner: str,
@@ -569,6 +662,18 @@ def check_package_existence(
         result.update(user_result)
         return result
 
+    # ── Level 5: 项目 additional_repos（外挂源，如 ROS SIG 源）────────────────
+    # 项目主动挂的外部源，构建/CI 两侧都已注入，可信度等同项目自身，
+    # 先于官方源/EUR 判定（L2 本来也先于 L1 执行，编号不代表顺序）
+    extra_repos = _get_project_additional_repos(copr_url, copr_owner, copr_project,
+                                                copr_login, copr_token)
+    if extra_repos:
+        extra_match = _check_additional_repos(pkgname, lang, extra_repos, target,
+                                              version, requirement)
+        if extra_match:
+            result.update(extra_match)
+            return result
+
     # ── Level 2: openEuler 目标版本 ─────────────────────────────────────────
     # 官方源复用零成本，优先于 EUR SRPM 重建（原顺序 L1 在 L2 前，
     # 官方源已有的包会被 EUR 命中抢走，白白重建一次）
@@ -619,7 +724,7 @@ def check_package_existence(
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="4 级级联包存在性检查"
+        description="级联包存在性检查"
     )
     parser.add_argument("pkgname", help="包名")
     parser.add_argument("--lang", default="", help="语言：python/go/rust/c/cpp/nodejs/java")
@@ -650,8 +755,9 @@ def main() -> int:
     if args.json or not args.output:
         print(json.dumps(result, ensure_ascii=False, indent=2))
 
-    # 退出码：0=命中（L1/L2），3=有参考源（L3），4=全新（L4）
-    if result["decision"] in ("reuse_eur_srpm", "reuse_official"):
+    # 退出码：0=命中（L0/L1/L2/L5），3=有参考源（L3），4=全新（L4）
+    if result["decision"] in ("reuse_eur_srpm", "reuse_official",
+                              "reuse_copr_project", "reuse_additional_repo"):
         return 0
     elif result["decision"] == "introduce_new_with_ref":
         return 3

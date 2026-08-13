@@ -212,6 +212,13 @@ def run_gate(args: argparse.Namespace) -> int:
                     f"openEuler 目标版本已有满足要求的包："
                     f"{match_info.get('rpm_name', '')} {match_info.get('version', '')}"
                 )
+            elif decision == "reuse_additional_repo":
+                reason = (
+                    f"项目 additional_repos（外挂源）已有满足要求的包："
+                    f"{cascade_result.get('rpm_name', '')} "
+                    f"{cascade_result.get('version', '')}"
+                    f"（{cascade_result.get('source', '')}），直接复用"
+                )
             elif decision == "evaluate":
                 reason = (
                     f"openEuler 目标版本有包但版本不满足要求："
