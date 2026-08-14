@@ -101,12 +101,16 @@ cat "./pkgs/${PKGNAME}/ci_check_result.json" 2>/dev/null || true
 ## 阶段 2：诊断（仅 trigger=build_failed）
 
 1. **先查 same_as_previous**：`build_failure_*.json` 中 `same_as_previous=true` 表示本轮错误与上轮相同，上轮修法未触及根因——**禁止沿用上轮修法**。
-2. **修法穷尽出口**：同一类别已连续 2 次 rebuild 且错误语义未变（对照 fix_instructions.md 历史判断）→ 直接判 `abort`，reason 写明"修法穷尽"。
-3. **失败分类**：读 `/app/.claude/skills/import-package-step/references/failure-taxonomy.md`，结合 `${LANG}` 与错误报告语义对照判断类别 A-E（不要只做字面匹配）。类别 E 只对主包发生（dep 构建成功即 build_done，不做安装验证）。
-4. **类别 B（缺依赖）verdict 由 `check_existing_package.py` 的 decision 写死映射**（不再两段式）：
-   `reuse_official` / `reuse_copr_project` → `rebuild`（包名**无版本约束**加入 BuildRequires）；`introduce_new` → `retry-dep`（register 脚本注册依赖）。
-5. **判定修复影响面（多 chroot 必填）**：写明修复是 **chroot-local**（只影响失败 chroot，如架构专属 flags、该 chroot 工具链版本适配）还是 **global**（触及共享 SRPM 内容：源码 patch、非条件化 spec 段）——写入 failure_analysis 的 `scope` 字段（`chroot-local` | `global`），供重交范围决策。
-6. 输出**唯一** verdict：`retry-transient` / `retry-dep` / `rebuild` / `regenerate` / `skip_chroot` / `abort`。
+2. **先查"是否在等依赖"**：读 `fix_instructions.md` 最近一次修法，若写明"依赖就绪后 <做某事>"（典型：等 dep 就绪后把包名加入 BuildRequires），且 `dep_registry.json` 中该依赖 status 已为 `reused` / `build_done`（两者均表示已就绪；`reused` = 复用官方源/外挂源成品，**无需构建**）→ 不再诊断，直接应用该修法判 `rebuild`。依赖已就绪还无产出退出 = 白烧一轮 no_output 预算。
+3. **修法穷尽出口**：同一类别已连续 2 次 rebuild 且错误语义未变（对照 fix_instructions.md 历史判断）→ 直接判 `abort`，reason 写明"修法穷尽"。
+4. **失败分类**：读 `/app/.claude/skills/import-package-step/references/failure-taxonomy.md`，结合 `${LANG}` 与错误报告语义对照判断类别 A-E（不要只做字面匹配）。类别 E 只对主包发生（dep 构建成功即 build_done，不做安装验证）。
+5. **类别 B（缺依赖）verdict 由 `check_existing_package.py` 的 decision 写死映射**（不再两段式）：
+   `reuse_official` / `reuse_copr_project` / `reuse_additional_repo` → `rebuild`（包名**无版本约束**加入 BuildRequires）；`introduce_new` → `retry-dep`（register 脚本注册依赖）。
+   - decision **必须是本轮对失败 chroot 实跑 `check_existing_package.py` 的结果**，禁止凭模型先验断言"官方源/外挂源缺某包"（everything/EPOL 覆盖面远超直觉，已有 libzip-devel 误判事故）。
+   - 查询名必须是构建系统**实际需要的包名**：CMake `find_package(X)` / 头文件 / 链接库缺失 → 查 `X-devel`（或 `dnf provides '*/xxx.h'` 反查）；只查 runtime 包名 `X` 是假阳性。
+   - **先查 spec 再查源**：`find_package(X REQUIRED)` / `xxx.h: No such file or directory` 失败时，先对照 submitted spec 快照确认是否已写对应 `BuildRequires`——没写且官方源可得 → 直接 `rebuild` 加 BR（最低成本路径），不走注册依赖。
+6. **判定修复影响面（多 chroot 必填）**：写明修复是 **chroot-local**（只影响失败 chroot，如架构专属 flags、该 chroot 工具链版本适配）还是 **global**（触及共享 SRPM 内容：源码 patch、非条件化 spec 段）——写入 failure_analysis 的 `scope` 字段（`chroot-local` | `global`），供重交范围决策。
+7. 输出**唯一** verdict：`retry-transient` / `retry-dep` / `rebuild` / `regenerate` / `skip_chroot` / `abort`。
 
 ## 阶段 3：按 verdict 执行
 
@@ -124,11 +128,11 @@ cat "./pkgs/${PKGNAME}/ci_check_result.json" 2>/dev/null || true
 
 ### verdict = retry-dep（注册缺失依赖，不改 spec）
 
-- 【前置条件】类别 B 且 `check_existing_package.py` 返回 `introduce_new`；或 trigger=ci_failed（类别 E，仅主包，`ci_check_result.json` 的 errors 列出缺失运行时依赖）。
+- 【前置条件】类别 B 且本轮实跑 `check_existing_package.py` 返回 `introduce_new`（禁止未验证凭先验判 retry-dep，见阶段 2 第 5 条）；或 trigger=ci_failed（类别 E，仅主包，`ci_check_result.json` 的 errors 列出缺失运行时依赖）。
 - 【动作序列】
   1. 从错误报告/ci_check_result 提取缺失依赖名，**根据 `${LANG}` 映射到 RPM 包名**：Python `xxx` → `python3-xxx`；Java → `java-xxx` 或 `mvn(group:artifact)`；Ruby → `rubygem-xxx`；Node.js → `nodejs-xxx` 或 `npm(xxx)`；ROS → `ros-<distro>-<name>` 保持原样（distro 取 session.json 的 `ros_distro`），**且必须在 `ros-projects.list` 中真实存在**。C/C++ 头文件 / pkg-config / 链接库按文件查：`dnf provides '*/xxx.h'`、`dnf provides 'pkgconfig(xxx)'`、`dnf provides 'libxxx.so*'`。
      > **ROS 幻觉依赖名处置**：register 脚本对 `ros-<distro>-*` 做清单硬校验，**exit 3 = 该依赖名在 ros-projects.list 中不存在**——这是 spec 写错了依赖名，不是真的缺包。此时**禁止换个名字强行注册**（递归构建造不出清单外的 ROS 包），应改判 `rebuild`：按脚本输出的最近匹配建议修正 spec 中的依赖名（典型：`<build_type>ament_python</build_type>` 被误写成 `ros-<distro>-ament-python`，正确依赖是 `ros-<distro>-ament-cmake-python` 或纯 setuptools 不需要 ROS 构建依赖）。
-  2. 构建期缺依赖先用 `check_existing_package.py` 确认（decision 映射见阶段 2 第 4 条）：
+  2. 构建期缺依赖先用 `check_existing_package.py` 确认（decision 映射见阶段 2 第 5 条）：
      ```bash
      python3 $BUILD_RPM_DIR/scripts/check_existing_package.py <rpm_pkgname> \
        --lang ${LANG} --chroot ${FAILED_CHROOT} \
@@ -186,7 +190,7 @@ cat "./pkgs/${PKGNAME}/ci_check_result.json" 2>/dev/null || true
 
 ### verdict = abort
 
-- 【前置条件】类别 A 硬错误（chroot 缺失等基础设施问题）；类别 D 无法修复；修法穷尽（阶段 2 第 2 条）；验证重试耗尽；MISMATCH 二次；**全部 chroot 修复预算超限**（单 chroot 超限判 `skip_chroot`，不判 abort）。
+- 【前置条件】类别 A 硬错误（chroot 缺失等基础设施问题）；类别 D 无法修复；修法穷尽（阶段 2 第 3 条）；验证重试耗尽；MISMATCH 二次；**全部 chroot 修复预算超限**（单 chroot 超限判 `skip_chroot`，不判 abort）。
 - 【动作序列】不修改任何文件。
 - 【退出前必写产物】failure_analysis（verdict=abort，reason 写清具体原因）。
 - 【退出后状态机去向】supervisor → fail，全单终止。**注意**：只是当前 chroot 修不了时判 `skip_chroot` 而非 abort——abort 意味着整个 job（所有 chroot）都无法继续。

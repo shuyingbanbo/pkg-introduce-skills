@@ -15,11 +15,19 @@ pkg-fixer 阶段 2 诊断时对照本表判断失败类别，再回到 pkg-fixer
 
 不同语言"缺少依赖"的报错形式各异，根据日志语义判断。
 本类别的最终 verdict 由 `check_existing_package.py` 的 decision 写死映射（见 pkg-fixer.md 阶段 2）：
-`reuse_official` / `reuse_copr_project` → `rebuild`；`introduce_new` → `retry-dep`。
+`reuse_official` / `reuse_copr_project` / `reuse_additional_repo` → `rebuild`；`introduce_new` → `retry-dep`。
+
+> ⛔ **缺包判定必须实跑验证，禁止凭先验**：判 `retry-dep`（= 认定官方源/外挂源没有该包）之前，
+> 必须对失败 chroot 实跑 `check_existing_package.py` 得出 decision。openEuler everything/EPOL 源的
+> 覆盖面远超模型直觉——已有事故：`Could NOT find libzip` 被断言"官方源没有 libzip-devel"而注册新依赖，
+> 实际 `libzip-devel` 就在 everything 源，真正缺的只是 spec 里的一行 `BuildRequires`。
+> 查询时必须用构建系统**实际需要的名字**：CMake `find_package(X)` / 头文件 / 链接库缺失 → 查 `X-devel`
+> （或 `dnf provides '*/xxx.h'` 反查）；只查 runtime 包名 `X` 是假阳性——runtime 在不等于 devel 在。
 
 | 根因语义 | 典型表现（举例，非穷举） |
 |---------|----------------------|
 | **RPM 包安装失败** | `No matching package to install` / `nothing provides` |
+| **CMake 包查找失败** | `Could NOT find Xxx (missing: ...)` / `find_package(Xxx REQUIRED)` 失败——**先对照 submitted spec 确认是否缺对应 `BuildRequires: xxx-devel`**：缺 BR 且官方源可得 → 直接 `rebuild` 加 BR，不要注册依赖 |
 | **语言运行时缺模块** | Python: `ModuleNotFoundError` / `ImportError: No module named`；Ruby: `cannot load such file`；Java: `package xxx does not exist` / `cannot find symbol`；Node: `Cannot find module` |
 | **语言运行时版本不足** | Python: `TypeError` / `ImportError` + 版本信息；Java: `class file has wrong version` |
 | **C/C++ 头文件缺失** | `fatal error: xxx.h: No such file or directory` |
