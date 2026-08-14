@@ -43,15 +43,26 @@ def _version_tuple(version: str) -> tuple:
     return tuple(tokens)
 
 
+# 预发布标记：同为该版本时预发布 < 正式版（PEP 440 语义）
+_PRE_TOKENS = ("a", "alpha", "b", "beta", "rc", "pre", "preview", "dev")
+
+
 def _cmp(a: str, b: str) -> int:
-    ta, tb = _version_tuple(a), _version_tuple(b)
+    ta, tb = list(_version_tuple(a)), list(_version_tuple(b))
+    # 尾部补零对齐：2.0 与 2.0.0 应判相等
+    n = max(len(ta), len(tb))
+    ta += [0] * (n - len(ta))
+    tb += [0] * (n - len(tb))
     for x, y in zip(ta, tb):
         if type(x) is not type(y):
+            # 一侧为预发布标记、另一侧为数值（含补零）→ 预发布侧更小
+            if isinstance(x, str) and isinstance(y, int):
+                return -1 if x.lower() in _PRE_TOKENS else 1
+            if isinstance(x, int) and isinstance(y, str):
+                return 1 if y.lower() in _PRE_TOKENS else -1
             x, y = str(x), str(y)
         if x != y:
             return -1 if x < y else 1
-    if len(ta) != len(tb):
-        return -1 if len(ta) < len(tb) else 1
     return 0
 
 

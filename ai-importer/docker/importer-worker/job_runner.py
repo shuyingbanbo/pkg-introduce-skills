@@ -613,7 +613,8 @@ def run_job(r, proj, job_id):
     # 归一化：用户可能误传入 RPM 包名（python-numpy），剥离语言前缀还原为上游名
     # ROS 模式跳过：ROS 包名无语言前缀，剥离逻辑会误伤（前端已按 ROS 语义校验）
     if mode != "ros":
-        for _pfx in ["python3-", "python-", "nodejs-"]:
+        for _pfx in ["python3-", "python-", "nodejs-", "npm-",
+                     "rubygem-", "golang-", "java-", "maven-"]:
             if pkgname.startswith(_pfx):
                 _normalized = pkgname[len(_pfx):]
                 _log(r, job_id, f"[归一化] pkgname '{pkgname}' → '{_normalized}'")

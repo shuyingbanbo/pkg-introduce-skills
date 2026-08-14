@@ -70,10 +70,17 @@ def split_version_tokens(version: str) -> list:
 
 
 def compare_versions(left: str, right: str) -> int:
+    # 预发布标记：1.0rc1 < 1.0（PEP 440 语义）；token 已 lowercase
+    _PRE = ("a", "alpha", "b", "beta", "rc", "pre", "preview", "dev")
+
     def _cmp_token(l, r):
         if l is None and r is None: return 0
-        if l is None: return 0 if (isinstance(r, int) and r == 0) else -1
-        if r is None: return 0 if (isinstance(l, int) and l == 0) else 1
+        if l is None:
+            if isinstance(r, int): return 0 if r == 0 else -1
+            return 1 if r in _PRE else -1
+        if r is None:
+            if isinstance(l, int): return 0 if l == 0 else 1
+            return -1 if l in _PRE else 1
         if isinstance(l, int) and isinstance(r, int): return (l > r) - (l < r)
         if isinstance(l, int): return 1
         if isinstance(r, int): return -1

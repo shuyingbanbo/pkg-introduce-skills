@@ -129,9 +129,12 @@ def main() -> int:
     # 与上一轮比较（仅提示）
     my_signature = _signature(failed_phase, error_lines)
     same_as_previous = False
+    # 精确排除本轮自身的输出文件——子串匹配会误伤（如 build_id=52 滤掉 ..._521.json），
+    # build_id 为空时排除 build_failure.json，避免与将被覆盖的自身旧文件比较恒为 True
+    own_name = f"build_failure_{build_id}.json" if build_id else "build_failure.json"
     prev_files = sorted(
         f for f in glob.glob(str(pkg_dir / "build_failure_*.json"))
-        if build_id not in f
+        if Path(f).name != own_name
     )
     if prev_files:
         try:
@@ -165,7 +168,7 @@ def main() -> int:
                 if _d not in sys.path:
                     sys.path.insert(0, _d)
                 from rpm_naming import get_rpm_pkg_name
-                for mod in dict.fromkeys(mods)[:10]:
+                for mod in list(dict.fromkeys(mods))[:10]:
                     hints.append({"module": mod,
                                   "rpm_hint": get_rpm_pkg_name(lang, mod.split(".")[0]),
                                   "confidence": "low"})

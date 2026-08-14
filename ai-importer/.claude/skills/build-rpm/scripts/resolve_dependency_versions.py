@@ -300,6 +300,7 @@ def resolve_layer_candidates(
     return build_layer_plan(requests, build_state_dir, requested_by, pkgname=pkgname, lang=lang)
 
 
+def main() -> int:
     parser = argparse.ArgumentParser(description="解析依赖版本候选")
     parser.add_argument("--dependency-json", required=True, help="单个依赖项 JSON 文件路径")
     parser.add_argument("--build-state-dir", default="./build_state")

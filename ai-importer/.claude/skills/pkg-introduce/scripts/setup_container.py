@@ -27,13 +27,14 @@ _SCRIPT_DIR = Path(__file__).resolve().parent
 def _load_conf() -> dict:
     # BUILD_ENV_CONF 由 Build Job entrypoint 动态生成并注入，用于多版本/并发场景
     # 未设置时回退到静态配置文件（本地开发 / 单次手动调用）
-    env_path = os.environ.get("BUILD_ENV_CONF", "")
-    _conf_path = Path(env_path) if env_path else _SCRIPT_DIR.parent / "build-env.conf.json"
-    if not _conf_path.exists():
-        print(f"[ERROR] 配置文件不存在: {_conf_path}", file=sys.stderr)
+    if not _CONF_PATH.exists():
+        print(f"[ERROR] 配置文件不存在: {_CONF_PATH}", file=sys.stderr)
         sys.exit(1)
-    with open(_conf_path) as f:
+    with open(_CONF_PATH) as f:
         return json.load(f)
+
+_env_path = os.environ.get("BUILD_ENV_CONF", "")
+_CONF_PATH = Path(_env_path) if _env_path else _SCRIPT_DIR.parent / "build-env.conf.json"
 
 _CONF = _load_conf()
 _IMG = _CONF["image"]
