@@ -1,0 +1,29 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-markers"
+markers = [
+    "integration: needs real environment (docker/dnf/network), skipped by default",
+]
+
+[tool.coverage.run]
+# 覆盖率统计范围:五个 skills scripts 目录 + worker 三件套
+source = [
+    ".claude/skills/build-rpm/scripts",
+    ".claude/skills/import-package-step/scripts",
+    ".claude/skills/pkg-introduce/scripts",
+    ".claude/skills/archive-rpm-sources/scripts",
+    ".claude/skills/review-rpm/scripts",
+    "docker/importer-worker",
+]
+# 仅排除测试自身(自建 main 驱动的旧式断言脚本,非被测对象)
+omit = [
+    ".claude/skills/archive-rpm-sources/scripts/test_compat.py",
+]
+
+[tool.coverage.report]
+show_missing = true
+# 合规闸门:覆盖率低于 80% 时 pytest --cov 直接失败(上线前置检查)
+fail_under = 80
+exclude_lines = [
+    "pragma: no cover",
+]
