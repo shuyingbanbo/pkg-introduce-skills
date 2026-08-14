@@ -315,7 +315,13 @@ def _dnf_repoquery(pkgname: str, lang: str) -> Optional[dict]:
     elif lang_lower == "java":
         query_args.append(f"mvn({pkgname})")
     else:
-        query_args.extend(sorted(candidates)[:8])
+        # 精确名（及 dash/underscore 变体）必须最先查：启发式候选按字母序取前 N 个，
+        # 真名可能被 lib-*/python3-* 等垃圾变体挤出截断窗口（如 libzip-devel 38 个
+        # 候选中真名排第 9），导致官方源存在却误判 introduce_new
+        exact = [v for v in dict.fromkeys(
+            [pkgname, pkgname.replace("_", "-"), pkgname.replace("-", "_")]) if v]
+        rest = sorted(c for c in candidates if c not in exact)
+        query_args.extend(exact + rest[:8])
 
     fmt = "%{NAME}\\t%{VERSION}"
     for query in query_args:
@@ -352,7 +358,11 @@ def _dnf_repoquery_copr(pkgname: str, lang: str) -> Optional[dict]:
     elif lang_lower == "nodejs":
         query_args = [f"nodejs-{pkgname}", f"npm({pkgname})"]
     else:
-        query_args = sorted(candidates)[:8]
+        # 同 _dnf_repoquery：精确名优先，避免真名被启发式候选挤出截断窗口
+        exact = [v for v in dict.fromkeys(
+            [pkgname, pkgname.replace("_", "-"), pkgname.replace("-", "_")]) if v]
+        rest = sorted(c for c in candidates if c not in exact)
+        query_args = exact + rest[:8]
 
     repo_args = ["--disablerepo=*", "--enablerepo=oe-check-copr"]
     fmt = "%{NAME}\\t%{VERSION}"
