@@ -48,7 +48,12 @@ GLIBC_BUILTINS = {"pthread", "m", "dl", "c", "rt", "gcc_s", "stdc++", "resolv"}
 def parse_go_mod(source_dir: str) -> Dict:
     """
     解析 go.mod，提取 Go 版本和模块路径。
-    返回：{"go_version": "1.21", "module_path": "github.com/foo/bar", "found": True}
+    返回：{"go_version": "1.21", "module_path": "github.com/foo/bar", "found": True,
+           "module_deps": [{"name": "github.com/x/y", "vendor_only": True}, ...]}
+
+    module_deps 是 require 声明的模块清单——由 go mod vendor 整体解决，
+    标记 vendor_only（不进 dep_registry、不写 BuildRequires），
+    供 precheck/supervisor 做 vendor 语言依赖的身份判定。
     """
     go_mod = Path(source_dir) / "go.mod"
     if not go_mod.exists():
@@ -64,6 +69,21 @@ def parse_go_mod(source_dir: str) -> Dict:
     m = re.search(r"^go\s+([\d.]+)", content, re.MULTILINE)
     if m:
         result["go_version"] = m.group(1)
+
+    # require 块与单行 require 的模块名（跳过 // indirect 注释标记，模块名照收）
+    module_deps: List[Dict] = []
+    seen: set = set()
+    for m in re.finditer(r"^require\s+\((.*?)\)", content, re.MULTILINE | re.DOTALL):
+        for line in m.group(1).splitlines():
+            mm = re.match(r"\s*(\S+)\s+v\S+", line)
+            if mm and mm.group(1) not in seen:
+                seen.add(mm.group(1))
+                module_deps.append({"name": mm.group(1), "vendor_only": True})
+    for m in re.finditer(r"^require\s+(\S+)\s+v\S+", content, re.MULTILINE):
+        if m.group(1) not in seen:
+            seen.add(m.group(1))
+            module_deps.append({"name": m.group(1), "vendor_only": True})
+    result["module_deps"] = module_deps
 
     return result
 

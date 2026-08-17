@@ -428,6 +428,8 @@ _RUNTIME_INDICATORS = {
     "perl":   ["%{perl_vendorlib}", "%{perl_vendorarch}", "perl(", "Perl_vendorlib"],
     "lua":    ["%{lua_pkgdir}", "lua_version", "%luarocks_install"],
     "php":    ["%{php_extdir}", "%{php_inidir}", "phpize", "%php_zts"],
+    "ruby":   ["%{gem_dir}", "%{gem_instdir}", "%{gem_extdir_mri}",
+               "gem install", "rubygem("],
 }
 
 _NAME_PREFIX_MAP = {
@@ -437,13 +439,14 @@ _NAME_PREFIX_MAP = {
     "perl-": "perl",
     "lua-": "lua",
     "php-": "php", "php8-": "php",
+    "rubygem-": "ruby",
 }
 
 # 安装路径不含版本号，新旧版本必然文件冲突，不支持 compat
 _NO_COMPAT_TYPES = {"python", "nodejs", "perl", "lua", "php"}
 
 # 安装路径含版本号（gem 目录、jar 文件名），有机会 compat，尝试 rpmrebuild
-_TRY_COMPAT_TYPES = {"java"}
+_TRY_COMPAT_TYPES = {"java", "ruby"}
 
 
 def detect_package_type(pkg_name: str, repo_dir: str) -> str:
@@ -913,7 +916,8 @@ def ensure_readme(repo_dir: str, remote_url: str):
     readme = Path(repo_dir) / "README.md"
     if readme.exists():
         return
-    clean_url = remote_url.split("@")[-1] if "@" in remote_url else remote_url
+    # 只剥 user:token@ 凭据，保留协议（split("@")[-1] 会把 https:// 也丢掉）
+    clean_url = re.sub(r"://[^@/]+@", "://", remote_url)
     raw_base = clean_url.replace(
         "https://github.com/", "https://raw.githubusercontent.com/"
     ).removesuffix(".git")
@@ -1028,6 +1032,9 @@ def archive_introduction_reports(pkgs: list, reports_dir: str, repo_dir: str, pk
         dest_dir.mkdir(parents=True, exist_ok=True)
 
         copied = []
+
+        # 汇总报告路径（success 门检与下方复制共用，必须先于此处定义）
+        report_src = reports_path / f"{pkg}_introduction_report.md"
 
         # 成功归档：必须有结构化汇总报告且 review_summary 完成
         if subfolder == "success":

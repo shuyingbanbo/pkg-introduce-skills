@@ -1,0 +1,2 @@
+Source1:        libyaml-0.2.5.tar.gz
+Patch0: 0-libyaml-vendor-change-cmake-download.patch

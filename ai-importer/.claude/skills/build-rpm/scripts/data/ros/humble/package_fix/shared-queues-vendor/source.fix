@@ -1,0 +1,4 @@
+Source1:	8f65a8734d77c3cc00d74c0532efca872931d3ce.zip
+Source2:	ef7dfbf553288064347d51b8ac335f1ca489032a.zip
+
+Patch0: 0-shard-queues-vendor-change-cmake-download.patch

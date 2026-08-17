@@ -48,6 +48,16 @@ BUILD_ACTIONS_ARG=""; [ -f "./pkgs/${PKGNAME}/build_actions.json" ] && BUILD_ACT
 
 结果写入 `./pkgs/${PKGNAME}/feedback_${PKGNAME}.json`。
 
+skill 调用失败时也必须写最小占位产物再退出（产物缺失会让 supervisor 每 60s 无效重触发）：
+
+```bash
+python3 -c "
+import json
+json.dump({'status': 'skipped', 'reason': '<skill 调用失败原因>'},
+          open('./pkgs/${PKGNAME}/feedback_${PKGNAME}.json', 'w'), indent=2, ensure_ascii=False)
+"
+```
+
 **立即退出**。
 
 ## stage = summary
@@ -65,4 +75,17 @@ BUILD_ACTIONS_ARG=""; [ -f "./pkgs/${PKGNAME}/build_actions.json" ] && BUILD_ACT
 
 结果写入 `./pkgs/${PKGNAME}/${PKGNAME}_introduction_report.md`。
 
+skill 调用失败时也必须写最小占位产物（一行错误说明的 md）再退出（产物缺失会让 supervisor 每 60s 无效重触发）：
+
+```bash
+echo "# ${PKGNAME} 引入报告生成失败： <skill 调用失败原因>" > ./pkgs/${PKGNAME}/${PKGNAME}_introduction_report.md
+```
+
 **立即退出**。
+
+## 契约
+
+- 输入状态：supervisor 路由 feedback（主包构建+CI 全部通过）或 summary（feedback 产物已存在）时唤起；失败单的 fail 分支也会以 feedback/summary 两阶段唤起。
+- 产物及消费者：`feedback_<pkg>.json` → supervisor 判断是否推进到 summary；`<pkg>_introduction_report.md` → supervisor 判断 done / 归档与通知。
+- 预算与熔断：无重试预算——产物缺失时 supervisor 每 60s 重触发直到 max_loops，所以失败也必须写占位产物。
+- 异常出口：skill 调用失败写最小占位产物（feedback：`{"status":"skipped","reason":...}`；summary：一行错误说明的 md）后退出，不留空。

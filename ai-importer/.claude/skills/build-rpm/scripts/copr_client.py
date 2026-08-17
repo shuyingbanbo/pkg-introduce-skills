@@ -23,13 +23,41 @@ class CoprError(Exception):
     pass
 
 
+def parse_chroots(value):
+    """逗号分隔字符串或列表 → chroot 列表（去空白、去重、保持顺序）。"""
+    if not value:
+        return []
+    items = value.split(",") if isinstance(value, str) else [
+        part for v in value for part in str(v).split(",")
+    ]
+    seen, out = set(), []
+    for c in items:
+        c = c.strip()
+        if c and c not in seen:
+            seen.add(c)
+            out.append(c)
+    return out
+
+
+def primary_chroot(chroots):
+    """主 chroot：排序后第一个以 -x86_64 结尾的，否则排序后第一个。"""
+    if not chroots:
+        return ""
+    ordered = sorted(chroots)
+    for c in ordered:
+        if c.endswith("-x86_64"):
+            return c
+    return ordered[0]
+
+
 class CoprClient:
     def __init__(self, config_path=None):
         """
         config_path: copr_config.json 路径，默认读同目录
         也可通过环境变量覆盖：
           COPR_FRONTEND_URL, COPR_API_TOKEN, COPR_API_LOGIN
-          COPR_OWNER, COPR_PROJECT, COPR_CHROOT
+          COPR_OWNER, COPR_PROJECT, COPR_CHROOT（主 chroot）
+          COPR_CHROOTS / COPR_BUILD_CHROOTS 由 build_with_copr 解析
         """
         config = {}
         if config_path and os.path.exists(config_path):
@@ -339,28 +367,43 @@ class CoprClient:
         return downloaded
 
 
-def build_with_copr(srpm_path, config_path, output_json, chroot=None):
+def build_with_copr(srpm_path, config_path, output_json, chroot=None, chroots=None):
     """
     提交构建到 COPR，立即返回（不等待）。
     结果写入 output_json：status=copr_running, copr_build_id=<id>
     构建完成后由 job_runner 的 wait loop 负责拉取日志和写最终状态。
+
+    chroot 解析优先级：chroots 参数（列表或逗号分隔）> chroot 单值参数
+    > 环境变量 COPR_BUILD_CHROOTS > COPR_CHROOTS > COPR_CHROOT/config default_chroot。
+    单 chroot 场景（单元素列表）行为与旧版一致。
     """
     client = CoprClient(config_path)
-    if chroot:
-        client.default_chroot = chroot
+    chroot_list = parse_chroots(chroots) or parse_chroots(chroot)
+    if not chroot_list:
+        chroot_list = (parse_chroots(os.environ.get("COPR_BUILD_CHROOTS"))
+                       or parse_chroots(os.environ.get("COPR_CHROOTS")))
+    if chroot_list:
+        client.default_chroot = primary_chroot(chroot_list)
+    else:
+        # 旧回退：由 build_srpm 使用 default_chroot（COPR_CHROOT / config）
+        chroot_list = parse_chroots(client.default_chroot)
 
     result = {
         "status": "failed",
         "copr_build_id": None,
         "copr_chroot": client.default_chroot,
+        "copr_chroots": chroot_list,
+        "copr_build_ids": {},
         "build_log": "",
         "rpms": [],
         "failure_reason": "",
     }
 
     try:
-        build_id = client.build_srpm(srpm_path)
+        build_id = client.build_srpm(srpm_path, chroots=chroot_list or None)
         result["copr_build_id"] = build_id
+        # 一次提交 = 一个 build × N 个 build_chroot，各 chroot 共享同一 build_id
+        result["copr_build_ids"] = {c: build_id for c in chroot_list}
         result["status"] = "copr_running"
     except CoprError as e:
         result["failure_reason"] = str(e)
@@ -378,8 +421,12 @@ if __name__ == "__main__":
     parser.add_argument("srpm", help="SRPM 文件路径")
     parser.add_argument("--config", default=os.path.join(os.path.dirname(__file__), "..", "..", "..", "scripts", "copr_config.json"))
     parser.add_argument("--output", default="build_result.json")
-    parser.add_argument("--chroot", default=None)
+    parser.add_argument("--chroot", default=None,
+                        help="单个目标 chroot（等价于 --chroots 的单元素形式，兼容旧调用）")
+    parser.add_argument("--chroots", default=None,
+                        help="目标 chroot 列表，逗号分隔（如 openeuler-24.03-x86_64,openeuler-24.03-aarch64）")
     args = parser.parse_args()
 
-    success = build_with_copr(args.srpm, args.config, args.output, args.chroot)
+    success = build_with_copr(args.srpm, args.config, args.output,
+                              chroot=args.chroot, chroots=args.chroots)
     sys.exit(0 if success else 1)

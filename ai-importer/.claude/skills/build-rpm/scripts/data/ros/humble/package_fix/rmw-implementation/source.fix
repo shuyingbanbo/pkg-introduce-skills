@@ -1,0 +1,5 @@
+
+Requires: ros-%{ros_distro}-rmw-implementation-packages(member)
+%if 0%{?with_weak_deps}
+Recommends: ros-%{ros_distro}-rmw-fastrtps-cpp
+%endif

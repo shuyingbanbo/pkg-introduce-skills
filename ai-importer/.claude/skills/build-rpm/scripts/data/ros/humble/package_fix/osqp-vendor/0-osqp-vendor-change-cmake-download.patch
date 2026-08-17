@@ -1,0 +1,15 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index b17c512..ef7a27f 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -21,9 +21,7 @@ macro(build_osqp)
+ 
+   include(ExternalProject)
+   externalproject_add(osqp-${git_tag}
+-    GIT_REPOSITORY https://github.com/osqp/osqp.git
+-    GIT_TAG ${git_tag}
+-    GIT_SHALLOW ON
++    URL ${CMAKE_SOURCE_DIR}/osqp-${git_tag}.tar.gz
+     TIMEOUT 60
+     # Suppress git update due to https://gitlab.kitware.com/cmake/cmake/-/issues/16419
+     UPDATE_COMMAND ""

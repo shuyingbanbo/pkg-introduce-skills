@@ -21,6 +21,9 @@ import base64
 from pathlib import Path
 from typing import Any, Optional
 
+# 引入构建工具链名单与判断函数
+from chroot_toolchain import is_toolchain
+
 SKILLS_DIR = Path(__file__).resolve().parents[2]
 
 OFFICIAL_REPO_LABEL = "<openeuler-official>"
@@ -38,6 +41,8 @@ _CHROOT_REPO_MAP = {
     "openeuler-24.03_LTS-":       "http://repo.openeuler.org/openEuler-24.03-LTS",
     "openeuler-24.03_LTS_SP1-":   "http://repo.openeuler.org/openEuler-24.03-LTS-SP1",
     "openeuler-24.03_LTS_SP2-":   "http://repo.openeuler.org/openEuler-24.03-LTS-SP2",
+    "openeuler-24.03_LTS_SP3-":   "http://repo.openeuler.org/openEuler-24.03-LTS-SP3",
+    "openeuler-24.03_LTS_SP4-":   "http://repo.openeuler.org/openEuler-24.03-LTS-SP4",
 }
 
 _ACTIVE_REPO_FILE: Optional[Path] = None
@@ -65,10 +70,17 @@ def split_version_tokens(version: str) -> list:
 
 
 def compare_versions(left: str, right: str) -> int:
+    # 预发布标记：1.0rc1 < 1.0（PEP 440 语义）；token 已 lowercase
+    _PRE = ("a", "alpha", "b", "beta", "rc", "pre", "preview", "dev")
+
     def _cmp_token(l, r):
         if l is None and r is None: return 0
-        if l is None: return 0 if (isinstance(r, int) and r == 0) else -1
-        if r is None: return 0 if (isinstance(l, int) and l == 0) else 1
+        if l is None:
+            if isinstance(r, int): return 0 if r == 0 else -1
+            return 1 if r in _PRE else -1
+        if r is None:
+            if isinstance(l, int): return 0 if l == 0 else 1
+            return -1 if l in _PRE else 1
         if isinstance(l, int) and isinstance(r, int): return (l > r) - (l < r)
         if isinstance(l, int): return 1
         if isinstance(r, int): return -1
@@ -257,6 +269,16 @@ def teardown_repo():
 
 # ── 官方源查询（dnf repoquery 本地执行）──────────────────────────────────────
 
+def _python_query_stem(pkgname: str) -> str:
+    """剥离可能已有的 python3-/python- 前缀，避免二次拼接（如 python3-python3-xxx）。"""
+    stem = pkgname
+    for prefix in ("python3-", "python-"):
+        if stem.startswith(prefix):
+            stem = stem[len(prefix):]
+            break
+    return stem
+
+
 def _dnf_repoquery(pkgname: str, lang: str) -> Optional[dict]:
     """
     在本地 dnf 中查找包。如果设置了临时 repo（_ACTIVE_REPO_FILE），
@@ -283,16 +305,23 @@ def _dnf_repoquery(pkgname: str, lang: str) -> Optional[dict]:
             pass
 
     if lang_lower == "python":
-        query_args.append(f"python3dist({pkgname.lower()})")
-        query_args.append(f"python3-{pkgname}")
-        query_args.append(f"python-{pkgname}")
+        stem = _python_query_stem(pkgname)
+        query_args.append(f"python3dist({stem.lower()})")
+        query_args.append(f"python3-{stem}")
+        query_args.append(f"python-{stem}")
     elif lang_lower == "nodejs":
         query_args.append(f"npm({pkgname})")
         query_args.append(f"nodejs-{pkgname}")
     elif lang_lower == "java":
         query_args.append(f"mvn({pkgname})")
     else:
-        query_args.extend(sorted(candidates)[:8])
+        # 精确名（及 dash/underscore 变体）必须最先查：启发式候选按字母序取前 N 个，
+        # 真名可能被 lib-*/python3-* 等垃圾变体挤出截断窗口（如 libzip-devel 38 个
+        # 候选中真名排第 9），导致官方源存在却误判 introduce_new
+        exact = [v for v in dict.fromkeys(
+            [pkgname, pkgname.replace("_", "-"), pkgname.replace("-", "_")]) if v]
+        rest = sorted(c for c in candidates if c not in exact)
+        query_args.extend(exact + rest[:8])
 
     fmt = "%{NAME}\\t%{VERSION}"
     for query in query_args:
@@ -324,11 +353,16 @@ def _dnf_repoquery_copr(pkgname: str, lang: str) -> Optional[dict]:
     lang_lower = (lang or "").lower()
     query_args = []
     if lang_lower == "python":
-        query_args = [f"python3-{pkgname}", f"python3dist({pkgname.lower()})"]
+        stem = _python_query_stem(pkgname)
+        query_args = [f"python3-{stem}", f"python3dist({stem.lower()})"]
     elif lang_lower == "nodejs":
         query_args = [f"nodejs-{pkgname}", f"npm({pkgname})"]
     else:
-        query_args = sorted(candidates)[:8]
+        # 同 _dnf_repoquery：精确名优先，避免真名被启发式候选挤出截断窗口
+        exact = [v for v in dict.fromkeys(
+            [pkgname, pkgname.replace("_", "-"), pkgname.replace("-", "_")]) if v]
+        rest = sorted(c for c in candidates if c not in exact)
+        query_args = exact + rest[:8]
 
     repo_args = ["--disablerepo=*", "--enablerepo=oe-check-copr"]
     fmt = "%{NAME}\\t%{VERSION}"
@@ -476,6 +510,12 @@ def summarize_copr_project(pkgname: str, lang: str, requested_version: str,
 
 def choose_decision(official: dict, copr: dict, requested_version: str,
                     requirement: str) -> str:
+    # 构建工具链：只要官方源存在任意版本，就复用（禁止引入/升级构建工具）
+    if official.get("exists"):
+        rpm_name = (official.get("highest") or {}).get("name", "")
+        if rpm_name and is_toolchain(rpm_name):
+            return "reuse_official"
+
     # 官方源满足 → 直接复用
     if official["meets_need"]:
         return "reuse_official"
@@ -521,6 +561,33 @@ def check_existing_package(pkgname: str, version: str = "", requirement: str = "
     chroot: 目标构建 chroot（如 openeuler-22.03_LTS_SP2-x86_64）。
             传入后自动切换到对应 openEuler 版本的 repo 查询。
     """
+    if chroot and _chroot_to_repo_base(chroot) is None:
+        # 未识别的 chroot：禁止静默回退到 worker 本地 repo（那可能是错误的
+        # OS 版本，查询结果会被误记为目标 OS 的结论）。显式标记查询不可用，
+        # 按"官方源未确认"处理（decision=introduce_new，构建是安全方向）。
+        print(f"[WARN] unknown chroot {chroot!r}: 无 repo 映射，跳过官方源查询",
+              file=sys.stderr)
+        not_found = {"exists": False, "highest": None, "meets_need": False,
+                     "matched_paths": [], "comparison_unknown": True}
+        return {
+            "requested": {
+                "pkgname":          pkgname,
+                "version":          version,
+                "requirement":      requirement,
+                "lang":             lang,
+                "chroot":           chroot,
+                "requirement_info": parse_requirement(requirement),
+            },
+            "official":              not_found,
+            "copr_project":          dict(not_found),
+            "exists_in_official":    False,
+            "exists_in_copr_project": False,
+            "decision":              "introduce_new",
+            "reason":                f"chroot {chroot} 无 repo 映射，官方源查询不可用",
+            "should_skip":           False,
+            "error":                 f"unknown chroot: {chroot}",
+        }
+
     repo_switched = False
     try:
         if chroot:

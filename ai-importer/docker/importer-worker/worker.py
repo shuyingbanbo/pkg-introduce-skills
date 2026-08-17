@@ -15,6 +15,7 @@ log = logging.getLogger("worker")
 
 REDIS_HOST = os.environ.get("REDIS_HOST", "redis")
 REDIS_PORT = int(os.environ.get("REDIS_PORT", 6379))
+REDIS_PASSWORD = os.environ.get("REDIS_PASSWORD", "")
 CANCEL_PORT = int(os.environ.get("CANCEL_PORT", 8080))
 
 QUEUE_PREFIX = "queue:ai:"
@@ -23,10 +24,13 @@ LOCK_PREFIX  = "lock:ai:"
 JOB_PREFIX   = "job:ai:"
 LOGS_PREFIX  = "logs:ai:"
 LOCK_TTL     = 7200
+# ROS 批量任务（依赖展开 + 串行构建）必然超过 2h，锁按 mode 延长，
+# 否则多副本部署下锁过期会重复拉起同一 job
+LOCK_TTL_ROS = 21600
 
 
 def make_redis():
-    return redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
+    return redis.Redis(host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD or None, decode_responses=True)
 
 
 def pick_next_job(r):
@@ -94,13 +98,18 @@ def main():
                 time.sleep(1)
                 continue
 
-            locked = r.set(f"{LOCK_PREFIX}{proj}", job_id, nx=True, ex=LOCK_TTL)
+            # 检查任务是否已被取消（排队中被取消的任务仍在队列中）
+            job_meta = r.hgetall(f"{JOB_PREFIX}{job_id}")
+            job_status = job_meta.get("status")
+            if job_status == "cancelled":
+                log.info("Job %s was cancelled while queued, skipping", job_id)
+                continue
+
+            # ROS 任务锁 TTL 按 mode 延长（批量 ROS 任务必然超过普通 2h）
+            _ttl = LOCK_TTL_ROS if job_meta.get("mode") == "ros" else LOCK_TTL
+            locked = r.set(f"{LOCK_PREFIX}{job_id}", "1", nx=True, ex=_ttl)
             if not locked:
-                # Another worker is handling this project; put job back and wait
-                r.rpush(f"{QUEUE_PREFIX}{proj}", job_id)
-                r.sadd(ACTIVE_SET, proj)
-                log.info("Project %s already locked, skipping", proj)
-                time.sleep(2)
+                log.warning("Job %s lock conflict (should not happen), skipping", job_id)
                 continue
 
             log.info("Starting job %s for project %s", job_id, proj)
@@ -114,8 +123,8 @@ def main():
                 r.rpush(f"{LOGS_PREFIX}{job_id}",
                         _j.dumps({"msg": "Worker internal error", "done": True, "status": "failed"}))
             finally:
-                r.delete(f"{LOCK_PREFIX}{proj}")
-                log.info("Released lock for %s", proj)
+                r.delete(f"{LOCK_PREFIX}{job_id}")
+                log.info("Released lock for %s", job_id)
 
         except redis.RedisError as exc:
             log.error("Redis error: %s — retry in 5s", exc)

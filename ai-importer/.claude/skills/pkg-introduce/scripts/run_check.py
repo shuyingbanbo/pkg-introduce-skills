@@ -43,6 +43,7 @@ from run_pkg_introduce_flow import (  # noqa: E402
     detect_lang_and_version,
     run_command,
 )
+from java_metadata import detect_java_build_system  # noqa: E402
 
 CHECK_STEPS = ["init", "repo_check", "download", "license_check", "detect"]
 
@@ -212,7 +213,25 @@ def _run_detect(report: dict, pkgname: str, source_dir: Path, expected_version: 
         return lang, ""
 
     if status == "done":
-        report["steps"]["detect"] = {"status": "done", "lang": lang, "version": version}
+        step_done: dict[str, Any] = {"status": "done", "lang": lang, "version": version}
+        if lang == "java":
+            build_system = detect_java_build_system(str(source_dir))
+            step_done["build_system"] = build_system
+            if build_system == "gradle":
+                # Gradle 项目在 chroot 的 maven-local 离线设施下无法构建，
+                # 在 evaluate 阶段直接标记失败（abort），不浪费构建资源
+                report["steps"]["detect"] = {
+                    "status": "failed",
+                    "lang": lang,
+                    "version": version,
+                    "build_system": "gradle",
+                    "reason": ("Gradle build system is not supported by the chroot Java "
+                               "offline build infrastructure (maven-local based); "
+                               "abort without attempting build"),
+                }
+                raise FlowError(report["steps"]["detect"]["reason"],
+                                "non_retryable_gradle_build_system")
+        report["steps"]["detect"] = step_done
         return lang, version
 
     report["steps"]["detect"] = {"status": "failed", "reason": result.get("reason", str(result))}

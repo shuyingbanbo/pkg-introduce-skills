@@ -10,10 +10,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+
+from copr_client import parse_chroots, primary_chroot
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
 PRE_CHECK_SCRIPT = SCRIPTS_DIR / "pre_check_deps.py"
@@ -53,6 +56,34 @@ def run_precheck(pkgname: str, lang: str, source_dir: str, reports_dir: Path) ->
            "-o", str(precheck_json)]
     proc = run_command(cmd)
     return proc.returncode, precheck_json, proc.stdout.strip(), proc.stderr.strip()
+
+
+def reconcile_pending_with_registry(pending: list[dict], session_dir: Path) -> list[dict]:
+    """与 dep_registry 对账：已 build_done 的依赖（本项目仓已构建成功）从 pending 剔除。
+
+    precheck 的 pending 基于官方源状态（官方源不会因本次引入而变化），
+    不与 registry 对账会导致 dep_needed 与 supervisor"依赖已就绪"结论矛盾，
+    build_main 空转死循环。
+    """
+    if not pending:
+        return pending
+    dep_reg_path = session_dir / "dep_registry.json"
+    if not dep_reg_path.exists():
+        return pending
+    try:
+        dep_reg = json.loads(dep_reg_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return pending
+    done = {k for k, v in dep_reg.items()
+            if isinstance(v, dict) and v.get("status") == "build_done"}
+    if not done:
+        return pending
+    skipped = [d.get("name") or d.get("dep", "") for d in pending
+               if (d.get("name") or d.get("dep", "")) in done]
+    if skipped:
+        print(f"[build-rpm] precheck 对账: {skipped} 已 build_done，从 pending 剔除",
+              file=sys.stderr)
+    return [d for d in pending if (d.get("name") or d.get("dep", "")) not in done]
 
 
 def build_result_payload(
@@ -127,6 +158,7 @@ def main() -> int:
             session = _json.loads(session_json_path.read_text(encoding="utf-8"))
             for key, env_var in [
                 ("copr_chroot",  "COPR_CHROOT"),
+                ("copr_chroots", "COPR_CHROOTS"),
                 ("copr_url",     "COPR_FRONTEND_URL"),
                 ("copr_owner",   "COPR_OWNER"),
                 ("copr_project", "COPR_PROJECT"),
@@ -134,10 +166,25 @@ def main() -> int:
                 ("copr_token",   "COPR_API_TOKEN"),
             ]:
                 val = session.get(key, "")
+                if isinstance(val, list):
+                    val = ",".join(str(v) for v in val)
                 if val and not os.environ.get(env_var):
                     os.environ[env_var] = val
         except Exception:
             pass
+
+    # 多 chroot：本轮可提交集合优先级 COPR_BUILD_CHROOTS > COPR_CHROOTS > COPR_CHROOT，
+    # 归一化后回写环境（COPR_CHROOT=主 chroot），供 precheck / CI / 提交流程消费。
+    # 单 chroot 时解析结果即原单值，行为不变。
+    build_chroots: list[str] = []
+    for _var in ("COPR_BUILD_CHROOTS", "COPR_CHROOTS", "COPR_CHROOT"):
+        build_chroots = parse_chroots(os.environ.get(_var, ""))
+        if build_chroots:
+            break
+    if build_chroots:
+        os.environ["COPR_CHROOT"] = primary_chroot(build_chroots)
+        if not os.environ.get("COPR_CHROOTS"):
+            os.environ["COPR_CHROOTS"] = ",".join(build_chroots)
 
     def _abs(p: str, default: str = "") -> Path:
         s = p or default
@@ -205,6 +252,10 @@ def main() -> int:
         pending  = list(precheck.get("pending") or [])
         needs_ai = list(precheck.get("needs_ai") or [])
 
+        # 已 build_done 的依赖不算 pending（详见 reconcile_pending_with_registry docstring）
+        pending = reconcile_pending_with_registry(pending, session_dir)
+        precheck_summary["pending_count"] = len(pending)
+
         if needs_ai:
             payload = build_result_payload(
                 pkgname=args.pkgname, lang=args.lang, version=args.version,
@@ -237,7 +288,10 @@ def main() -> int:
             print(json.dumps(payload, ensure_ascii=False, indent=2))
             return 1
 
-        vendor_mode = precheck.get("vendor_mode", False)
+        # vendor_mode（旧字段，纯 go/rust/nodejs 超阈值）或主语言在 vendor_langs 中
+        # （混合包：主语言自身被 vendor 时其 pending 才豁免；python 主包不豁免）
+        vendor_mode = precheck.get("vendor_mode", False) \
+            or args.lang.lower() in (precheck.get("vendor_langs") or [])
         if pending and not vendor_mode:
             payload = build_result_payload(
                 pkgname=args.pkgname, lang=args.lang, version=args.version,

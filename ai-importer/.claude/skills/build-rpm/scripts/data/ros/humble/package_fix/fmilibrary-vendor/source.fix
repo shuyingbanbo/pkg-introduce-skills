@@ -1,0 +1,3 @@
+SOURCE1: fmi-library-2.2.3.tar.gz
+
+Patch0: 0-shard-queues-vendor-change-cmake-download.patch

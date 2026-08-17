@@ -126,6 +126,18 @@ fi
 
 若文件存在，**必须先读取全部内容，再生成 spec**。修法里的每一条指令都必须体现在生成的 spec 中。生成完 spec 后，对照修法逐条确认是否已应用。
 
+**第二步（前置）：混合包副语言判定**
+
+读 `./pkgs/<pkgname>/pre_check.json`（或 `--precheck-json` 指定路径）的 `secondary_langs` 字段：
+
+- 为空或不存在 → 普通单语言包，直接进入第二步。
+- 非空（如 `["rust"]`）→ **混合包**：主语言规则照读，此外对 `secondary_langs` 逐项追加读取对应规范的"混合包变体"节：
+  - `rust` → Read `/app/.claude/skills/build-rpm/spec-rules-rust.md` §3.4（混合包变体）
+  - `go` → Read `/app/.claude/skills/build-rpm/spec-rules-go.md` §2.4（混合包变体）
+- `secondary_manifests`（如 `{"rust": "rust/Cargo.toml"}`）给出 manifest 相对路径，`vendor_fetch` 和 spec `%prep` 必须以此定位 Cargo.toml / go.mod 所在目录，**不得假设在源码根目录**。
+
+**混合包依赖纪律**：`pre_check.json` 的 `vendor_crates` 字段列出的 crate/module 依赖由 vendor 解决——**不写入 BuildRequires，不得用 register-dep.py 注册为依赖**。`c_library_build_requires[]` 已包含副语言部分已验证的系统 C 库（如 openssl-devel），照常填入 BuildRequires。
+
 **第二步：读取通用规范**，根据 `<lang>` 读规范文件：
 
 - `python`：Read `/app/.claude/skills/build-rpm/spec-rules-python.md`
@@ -208,7 +220,7 @@ BL_RC=${PIPESTATUS[0]}
 python3 $SCRIPTS_DIR/copr_client.py \
   ./srpms/<pkgname>-<version>-1.src.rpm \
   --output ./pkgs/<pkgname>/build_rpm_result.json \
-  --chroot "$COPR_CHROOT"
+  --chroots "${COPR_BUILD_CHROOTS:-$COPR_CHROOTS}"
 ```
 
 > **提交完成后立即退出，不要等待、不要轮询、不要 sleep。**

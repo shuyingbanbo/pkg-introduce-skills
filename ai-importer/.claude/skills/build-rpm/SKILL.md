@@ -74,6 +74,61 @@ MAX_ROUNDS = 10
 
 ## 主流程
 
+### 0. 读取 gate 决策，确定构建路径
+
+**在开始任何操作之前**，先读取 gate_result 获取处置策略：
+
+```bash
+GATE_RESULT="./reports/gate_result_<pkgname>.json"
+GATE_DECISION=""
+if [ -f "$GATE_RESULT" ]; then
+  GATE_DECISION=$(python3 -c "import json; d=json.load(open('$GATE_RESULT')); print(d.get('result',{}).get('decision',''))" 2>/dev/null)
+  echo "[build-rpm] gate decision: $GATE_DECISION"
+fi
+```
+
+根据 `GATE_DECISION` 分支：
+
+#### `reuse_eur_srpm` — EUR SRPM 重建
+
+仅当 EUR 命中的 chroot 与目标 chroot 精确匹配（OS 版本 + 架构）时才会得到该决策；
+chroot 不匹配的 EUR 命中会被级联降级为 `introduce_new_with_ref`（参考源）。
+
+gate 阶段已下载 SRPM 到 `./srpms/` 并提取 spec 到 `./pkgs/<pkgname>/reference/`。
+
+**跳过 §1-§5，直接到 §6 提交 COPR 构建**：
+
+```bash
+echo "[build-rpm] EUR SRPM 重建模式 — 跳过 spec 生成，直接提交 COPR"
+SRPM_FILE=$(ls ./srpms/<pkgname>*.src.rpm 2>/dev/null | head -1)
+if [ -f "$SRPM_FILE" ]; then
+  python3 $SCRIPTS_DIR/copr_client.py \
+    "$SRPM_FILE" \
+    --output ./pkgs/<pkgname>/build_rpm_result.json \
+    --chroots "${COPR_BUILD_CHROOTS:-$COPR_CHROOTS}"
+  echo "✓ EUR SRPM 已提交 COPR 构建"
+  exit 0
+else
+  echo "[build-rpm] WARN: EUR SRPM 未找到，回退到完整构建流程"
+fi
+```
+
+若 SRPM 下载失败（网络问题），回退到完整构建流程。
+
+#### `introduce_new_with_ref` — 有参考源的新引入
+
+参考源有两种：gitcode src-openeuler 仓库，或 chroot 不匹配的 EUR 命中（降级）。
+gate 阶段已拉取参考 spec/yaml/patches 到 `./pkgs/<pkgname>/reference/`
+（EUR 参考源为 SRPM 中提取的 spec）。
+
+**跳过 §2.5**（参考源已在 gate 阶段拉取），§3 会自动检测参考 spec 并进入适配模式。
+
+#### 其他决策（`introduce_new` / 空）
+
+走完整流程（§1 → §2 → §2.5 → §3 → ...）。
+
+---
+
 ### 1. 读取源码中的构建说明
 
 若 `./sources/<pkgname>/` 不存在，先 clone：
@@ -107,49 +162,54 @@ PRECHECK_RC=$?
 ```
 
 - `PRECHECK_RC=1`（blocked）：终止，不生成 spec。
-- `PRECHECK_RC=2`（dep_needed）：将缺包写入 `dep_registry.json`，退出等待 lead 处理。
+- `PRECHECK_RC=2`（dep_needed）：执行以下命令将缺包写入 `dep_registry.json`，退出等待 lead 处理。
+
+```bash
+python3 /app/.claude/skills/import-package-step/scripts/update-dep-registry.py \
+  --session-dir ${SESSION_DIR} --pkg <pkgname>
+```
+
 - `PRECHECK_RC=3`（needs_ai）：web search 补全 upstream URL 后重新执行本步骤。
 - `PRECHECK_RC=0`（precheck_done）：继续 §3。
 
-### 3. 生成 spec
+> **§2.5（检查参考源）已移除。** 参考源的查询和拉取由 gate 阶段的 4 级级联查找统一完成。若 gate 决定 `introduce_new_with_ref`，参考 spec/yaml/patches 已在 `./pkgs/<pkgname>/reference/` 中；若 gate 决定 `introduce_new`，说明 gitcode 也没有参考源，无需再查。
 
-**⚠️ 第一步：判断是首次构建还是 rebuild**
+### 3. 生成 spec（仅首次构建）
 
-```bash
-FIX_FILE="./pkgs/<pkgname>/fix_instructions.md"
-SPEC_FILE="./pkgs/<pkgname>/<pkgname>.spec"
-```
+**⚠️ 前置检查**：若 `./pkgs/<pkgname>/<pkgname>.spec` 已存在，说明是失败修复场景——**停止并退出**，该任务应由 `pkg-fixer` 处理，不要重新生成 spec。
 
-#### rebuild 模式（fix_instructions.md 和 spec 均已存在）
-
-**不重新生成 spec**，只应用最新一次失败分析的修法：
+**第一步：检查 openEuler 已有 spec 作为参考**
 
 ```bash
-# 找最新的 failure_analysis 文件
-LATEST_ANALYSIS=$(ls -t ./pkgs/<pkgname>/failure_analysis_<pkgname>*.json 2>/dev/null | head -1)
-```
+REF_SPEC="./pkgs/<pkgname>/reference/<pkgname>.spec"
+REF_YAML="./pkgs/<pkgname>/reference/<pkgname>.yaml"
 
-**优先使用 `spec_patch`（精确替换）**：
-
-1. 读取 `$LATEST_ANALYSIS` 的 `spec_patch` 数组
-2. 对每条 patch，在现有 spec 中精确匹配 `before` 文本，用 Edit 工具替换为 `after`
-3. 找不到 `before` 文本时，读取该条 `description` 和 `fix_instructions` 字段，用 AI 判断等效位置并应用
-4. 所有 patch 应用完毕后，逐条确认改动已体现在 spec 中
-
-**`spec_patch` 为空或不存在时 fallback**：读取 `fix_instructions.md` 最后一个 `## build_id=` 块（仅最新，不读全部），根据描述修改 spec。
-
-5. 若上述两种方式均无法应用（spec 结构差异太大）→ 删除 spec，走下方"首次构建"流程重新生成
-6. 直接跳到 §3.5 rpmlint 校验，不执行"首次构建"步骤
-
-#### 首次构建（无 fix_instructions.md 或无 spec）
-
-读取修法（如有）：
-```bash
-if [ -f "$FIX_FILE" ]; then
-  echo "=== 发现历史修法，必须严格遵照 ==="
-  cat "$FIX_FILE"
+if [ -f "$REF_SPEC" ]; then
+  echo "=== 发现 openEuler 已有 spec 参考，以此为基础适配 ==="
+  echo "--- 参考 spec ---"
+  cat "$REF_SPEC"
+  echo "--- 参考 spec 结束 ---"
+  if [ -f "$REF_YAML" ]; then
+    echo "--- 参考 yaml 元数据 ---"
+    cat "$REF_YAML"
+    echo "--- 参考 yaml 结束 ---"
+  fi
+  echo "参考 patches:"
+  ls ./pkgs/<pkgname>/reference/*.patch 2>/dev/null || echo "(无)"
 fi
 ```
+
+**第二步（前置）：混合包副语言判定**
+
+读 `./pkgs/<pkgname>/pre_check.json`（或 `--precheck-json` 指定路径）的 `secondary_langs` 字段：
+
+- 为空或不存在 → 普通单语言包，直接进入第二步。
+- 非空（如 `["rust"]`）→ **混合包**：主语言规则照读，此外对 `secondary_langs` 逐项追加读取对应规范的"混合包变体"节：
+  - `rust` → Read `/app/.claude/skills/build-rpm/spec-rules-rust.md` §3.4（混合包变体）
+  - `go` → Read `/app/.claude/skills/build-rpm/spec-rules-go.md` §2.4（混合包变体）
+- `secondary_manifests`（如 `{"rust": "rust/Cargo.toml"}`）给出 manifest 相对路径，`vendor_fetch` 和 spec `%prep` 必须以此定位 Cargo.toml / go.mod 所在目录，**不得假设在源码根目录**。
+
+**混合包依赖纪律**：`pre_check.json` 的 `vendor_crates` 字段列出的 crate/module 依赖由 vendor 解决——**不写入 BuildRequires，不得用 register-dep.py 注册为依赖**。`c_library_build_requires[]` 已包含副语言部分已验证的系统 C 库（如 openssl-devel），照常填入 BuildRequires。
 
 **第二步：读取通用规范**，根据 `<lang>` 读规范文件：
 
@@ -159,10 +219,37 @@ fi
 - `c` / `cpp`：Read `/app/.claude/skills/build-rpm/spec-rules-cpp.md`
 - `go`：Read `/app/.claude/skills/build-rpm/spec-rules-go.md`
 - `rust`：Read `/app/.claude/skills/build-rpm/spec-rules-rust.md`
+- `ros`：Read `/app/.claude/skills/build-rpm/spec-rules-ros.md`
 
 **使用预检结果填写 BuildRequires：** 读 `./pkgs/<pkgname>/pre_check.json` 的 `resolved[].rpm_requirement` 直接填入。
 
+**C 扩展链接库 BuildRequires：** 若 `pre_check.json` 含 `c_library_build_requires[]`（非空），把其中每个 `-devel` 包名直接加入 `BuildRequires`——这些是预检阶段已在目标 chroot 源中验证存在的 C 扩展链接库（如 `libpq-devel`），无需再自行判断。字段为空或不存在时，按常规处理（缺的库由构建失败诊断循环兜底）。
+
 **注入历史经验：** 若传入 `--lessons`，读取并筛选相关条目注入 spec 生成推理。
+
+**第三步：根据是否有参考 spec 选择生成策略**
+
+##### A. 有参考 spec（`$REF_SPEC` 存在时）
+
+你**必须**以 openEuler 已有 spec 为起点进行适配，而不是从头生成：
+
+1. **保留结构**：保留参考 spec 的整体结构、`%package` 子包定义（devel/help 等）、RPM 宏使用习惯（`%cmake`、`%autosetup`、`%cmake_build` 等）
+2. **更新版本**：将 `Version` 更新为当前目标版本 `<version>`，`Release` 重置为 `1%{?dist}`
+3. **更新 Source0**：将 `Source0` URL 更新为当前上游 URL（`<upstream_url>`）
+4. **评估 patches**：
+   - 读取每个参考 patch 的内容，判断是否仍然需要
+   - 架构适配类 patch（如 RISC-V 修复、字节序修复）通常保留
+   - 已合入上游的 patch 或针对旧版本的补丁应删除
+   - 无法判断时保留并在 `%prep` 中应用，让 rpmbuild 验证
+5. **更新 BuildRequires**：使用 `./pkgs/<pkgname>/pre_check.json` 中的预检结果替换/补充 BuildRequires，移除参考 spec 中不再需要的依赖
+6. **清理 %changelog**：保留最近的条目格式作为参考，更新日期和版本号
+7. **检查宏兼容性**：确保使用的 RPM 宏在目标 openEuler 版本中存在
+
+> 参考 spec 来自 openEuler 社区维护者，经过了社区审查。**你的工作是把它适配到新版本，不是重写它。** 只有当参考 spec 与实际情况严重不符（如构建系统完全不同、上游项目重构）时，才回退到从头生成。
+
+##### B. 无参考 spec（`$REF_SPEC` 不存在时）
+
+从头生成 spec，遵循通用规范、预检结果和历史经验（当前行为不变）。
 
 ### 3.5 rpmlint 校验
 
@@ -170,6 +257,36 @@ fi
 rpmlint ./pkgs/<pkgname>/<pkgname>.spec 2>&1 \
   > ./pkgs/<pkgname>/rpmlint.txt || true
 ```
+
+### 3.6 ROS 依赖名门禁（仅 `<lang>=ros`，强制）
+
+spec 中所有 `ros-<distro>-*` 的 BuildRequires/Requires 必须在 `ros-projects.list` 中真实存在（§6 反幻觉铁律的机械校验）：
+
+```bash
+python3 /app/.claude/skills/build-rpm/scripts/verify_ros_spec_deps.py \
+  ./pkgs/<pkgname>/<pkgname>.spec --session-dir ${SESSION_DIR}
+VERIFY_RC=$?
+```
+
+- `VERIFY_RC=1`：幻觉依赖名——按输出的最近匹配建议回到 §3 修正 spec，重跑本节直至通过。**禁止跳过本门禁直接提交**。
+- `VERIFY_RC=0`：继续 §3.7。
+
+### 3.7 Requires provider 预检（所有语言，强制）
+
+spec 声明的 Requires/BuildRequires 必须在 CI 源集合（官方 everything/update/EPOL + COPR result + 项目 additional_repos）有 provider。无 provider 的 Requires 要等构建成功后的 CI 可安装性检查才暴露——白烧一整轮构建（ros2-numpy/python3-transforms3d 事故）：
+
+```bash
+python3 /app/.claude/skills/build-rpm/scripts/verify_spec_requires.py \
+  ./pkgs/<pkgname>/<pkgname>.spec --session-dir ${SESSION_DIR} \
+  --pkg <pkgname> --register-missing
+REQ_RC=$?
+```
+
+- `REQ_RC=4`：依赖完整性校验未通过——`pre_check` 分析（package.xml）声明的依赖被静默丢弃，未写进 spec。按输出指引三选一：写回 spec（无 provider 的下次执行会自动注册递归引入）、`pkgs/<pkgname>/waived_deps.txt` 带理由豁免、或修正依赖名。**不得强行提交**（spec-rules-ros §6）。
+- `REQ_RC=3`：缺口依赖已自动注册进 dep_registry（待引入）。**禁止本次提交**——结束本轮构建动作，等 supervisor 调度依赖构建完成后再提交主包。
+- `REQ_RC=1`：依赖无 provider 且注册失败——按输出指引修正 spec（依赖名写错）或确认该依赖确实无法引入后走 abort，**不得强行提交**。
+- `REQ_RC=0`：继续 §4。
+- 脚本/环境异常（WARN 降级放行）：继续 §4，CI 仍是最终门禁。
 
 ### 4. 准备 rpmbuild 输入
 
@@ -234,11 +351,22 @@ BL_RC=${PIPESTATUS[0]}
 
 若 `BL_RC=0`：提交 COPR 构建，提交后**立即退出**：
 
+> **多 chroot 提交语义**：`--chroots` 接受逗号分隔的多个 chroot，同一份 SRPM 会在每个 chroot 上独立重建（`--chroot` 单值参数保留兼容）。提交范围用 `$COPR_BUILD_CHROOTS`——supervisor 注入的**本轮可提交 chroot 子集**（依赖未就绪的 chroot 本轮不提交，后续增量补交）；未设置时回退 `$COPR_CHROOTS`（全部目标 chroot）。
+>
+> `build_rpm_result.json` 多 chroot 结构：`copr_build_id` / `copr_chroot` 保留（主 chroot，兼容旧消费者）；新增 `copr_chroots`（本轮提交的全部 chroot，list）与 `copr_build_ids`（`{chroot: build_id}` 映射）。下方快照存档读的 `copr_build_id` 无需改动。
+
 ```bash
 python3 $SCRIPTS_DIR/copr_client.py \
   ./srpms/<pkgname>-<version>-1.src.rpm \
   --output ./pkgs/<pkgname>/build_rpm_result.json \
-  --chroot "$COPR_CHROOT"
+  --chroots "${COPR_BUILD_CHROOTS:-$COPR_CHROOTS}"
+
+# 【强制】spec 快照存档：记录本次实际提交的 spec（地面真值，供 pkg-fixer 下轮修复对照）
+BUILD_ID="$(python3 -c "import json; print(json.load(open('./pkgs/<pkgname>/build_rpm_result.json')).get('copr_build_id',''))" 2>/dev/null)"
+if [ -n "$BUILD_ID" ]; then
+  mkdir -p ./pkgs/<pkgname>/submitted_specs
+  cp ./pkgs/<pkgname>/<pkgname>.spec ./pkgs/<pkgname>/submitted_specs/spec_${BUILD_ID}.spec
+fi
 ```
 
 > **提交完成后立即退出，不要等待、不要轮询、不要 sleep。**

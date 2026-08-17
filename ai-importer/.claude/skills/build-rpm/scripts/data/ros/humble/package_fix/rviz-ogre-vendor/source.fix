@@ -1,0 +1,2 @@
+Source1:        ogre-rm-Media-1.12.1.tar.gz
+Patch0: 0-rviz-ogre-vendor-change-cmake-download.patch

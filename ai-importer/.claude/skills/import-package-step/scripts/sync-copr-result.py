@@ -6,6 +6,8 @@
 """
 import argparse
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 
@@ -41,8 +43,20 @@ def main():
         br["build_log_tail"] = build_log[-2000:] if build_log else ""
 
     br["copr_build_id"] = copr.get("copr_build_id")
+    # 多 chroot 字段透传（worker 写入 copr_build_result.json 时才有；缺省保持旧结构）
+    for key in ("copr_chroots", "copr_build_ids", "copr_chroot"):
+        if copr.get(key):
+            br[key] = copr[key]
     br_path.write_text(json.dumps(br, indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"[sync-copr-result] {args.pkg}: copr_status={copr_status} → build_rpm_result.status={br['status']}")
+
+    # 失败时提取结构化错误报告，供 pkg-fixer 诊断（best-effort，不影响主流程）
+    if br["status"] == "failed":
+        extractor = Path(__file__).parent / "extract-build-failure.py"
+        subprocess.run(
+            [sys.executable, str(extractor), "--session-dir", str(sd), "--pkg", args.pkg],
+            check=False,
+        )
 
 
 if __name__ == "__main__":

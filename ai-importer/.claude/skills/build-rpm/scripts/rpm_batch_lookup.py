@@ -22,6 +22,8 @@ _CHROOT_REPO_MAP = {
     "openeuler-24.03_LTS-":      "http://repo.openeuler.org/openEuler-24.03-LTS",
     "openeuler-24.03_LTS_SP1-":  "http://repo.openeuler.org/openEuler-24.03-LTS-SP1",
     "openeuler-24.03_LTS_SP2-":  "http://repo.openeuler.org/openEuler-24.03-LTS-SP2",
+    "openeuler-24.03_LTS_SP3-":  "http://repo.openeuler.org/openEuler-24.03-LTS-SP3",
+    "openeuler-24.03_LTS_SP4-":  "http://repo.openeuler.org/openEuler-24.03-LTS-SP4",
 }
 
 
@@ -33,10 +35,13 @@ def chroot_to_repofrompath(chroot: str) -> list[tuple[str, str]]:
     arch = chroot.rsplit("-", 1)[-1] if "-" in chroot else "x86_64"
     for prefix, base_url in _CHROOT_REPO_MAP.items():
         if chroot.startswith(prefix):
+            # repo_id 带 chroot 后缀：dnf 缓存按 <repoid>-<hash> 建目录，
+            # warm_repo_cache / cacheonly 判断按 repoid 前缀 glob——
+            # id 不含 chroot 时多 chroot 会互相误判"已缓存"
             return [
-                ("oe-official", f"{base_url}/everything/{arch}/"),
-                ("oe-update",   f"{base_url}/update/{arch}/"),
-                ("oe-epol",     f"{base_url}/EPOL/main/{arch}/"),
+                (f"oe-official-{chroot}", f"{base_url}/everything/{arch}/"),
+                (f"oe-update-{chroot}",   f"{base_url}/update/{arch}/"),
+                (f"oe-epol-{chroot}",     f"{base_url}/EPOL/main/{arch}/"),
             ]
     return []
 

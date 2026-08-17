@@ -171,9 +171,10 @@ def _parse_npm_constraint(constraint: str):
         return None
 
     def to_tuple(v: str):
-        parts = re.sub(r"[^0-9.]", "", v).split(".")
+        # 在首个非数字/点字符处截断（1.0rc1 → 1.0），而非删除字母（会得到 1.01 这种错误值）
+        parts = re.split(r"[^0-9.]", v, maxsplit=1)[0].split(".")
         try:
-            return tuple(int(x) for x in parts[:3])
+            return tuple(int(x) for x in parts[:3] if x != "")
         except ValueError:
             return None
 
@@ -225,9 +226,10 @@ def _version_satisfies(rpm_version: str, constraint: str) -> bool:
         return True
 
     def to_tuple(v: str):
-        parts = re.sub(r"[^0-9.]", "", v).split(".")
+        # 在首个非数字/点字符处截断（1.0rc1 → 1.0），而非删除字母（会得到 1.01 这种错误值）
+        parts = re.split(r"[^0-9.]", v, maxsplit=1)[0].split(".")
         try:
-            return tuple(int(x) for x in parts[:3])
+            return tuple(int(x) for x in parts[:3] if x != "")
         except ValueError:
             return None
 

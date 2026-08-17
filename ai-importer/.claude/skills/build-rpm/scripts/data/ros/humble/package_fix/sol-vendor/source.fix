@@ -1,0 +1,5 @@
+Source1:        sol2.tar.gz
+Source2:        lua-5.4.4.tar.gz
+Source3:        0-sol2-change-cmake-download.patch
+
+Patch0:         0-sol-vendor-change-cmake-download.patch

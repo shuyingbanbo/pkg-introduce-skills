@@ -1,0 +1,13 @@
+diff -Naur ros-humble-iceoryx-posh-2.0.3_org/cmake/cpptoml/cpptoml.cmake.in ros-humble-iceoryx-posh-2.0.3/cmake/cpptoml/cpptoml.cmake.in
+--- ros-humble-iceoryx-posh-2.0.3_org/cmake/cpptoml/cpptoml.cmake.in	2023-04-25 15:20:09.843179069 +0800
++++ ros-humble-iceoryx-posh-2.0.3/cmake/cpptoml/cpptoml.cmake.in	2023-04-25 15:27:45.261850484 +0800
+@@ -21,8 +21,7 @@
+ 
+ include(ExternalProject)
+ ExternalProject_Add(ext_cpptoml
+-  GIT_REPOSITORY    https://github.com/skystrife/cpptoml.git
+-  GIT_TAG           v0.1.1
++  URL               ${CMAKE_CURRENT_SOURCE_DIR}/cpptoml-0.1.1.tar.gz
+   SOURCE_DIR        "${CMAKE_BINARY_DIR}/dependencies/cpptoml/src"
+   BINARY_DIR        "${CMAKE_BINARY_DIR}/dependencies/cpptoml/build"
+   CONFIGURE_COMMAND ""

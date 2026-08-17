@@ -1,0 +1,14 @@
+diff -Naur ros-humble-ignition-cmake2-vendor-0.0.2_org/CMakeLists.txt ros-humble-ignition-cmake2-vendor-0.0.2/CMakeLists.txt
+--- ros-humble-ignition-cmake2-vendor-0.0.2_org/CMakeLists.txt	2023-04-30 22:23:17.836615593 +0800
++++ ros-humble-ignition-cmake2-vendor-0.0.2/CMakeLists.txt	2023-04-30 22:23:56.536590326 +0800
+@@ -55,9 +55,7 @@
+   include(ExternalProject)
+ 
+   externalproject_add(ignition-cmake2-${IGNITION_CMAKE2_TARGET_VERSION}
+-    GIT_REPOSITORY https://github.com/ignitionrobotics/ign-cmake.git
+-    GIT_TAG ignition-cmake2_${IGNITION_CMAKE2_TARGET_VERSION}
+-    GIT_CONFIG advice.detachedHead=false
++    URL ${CMAKE_CURRENT_SOURCE_DIR}/ignition-cmake2_2.8.0.tar.gz
+     # Suppress git update due to https://gitlab.kitware.com/cmake/cmake/-/issues/16419
+     # See https://github.com/ament/uncrustify_vendor/pull/22 for details
+     UPDATE_COMMAND ""

@@ -1,0 +1,15 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 733471d..eed3268 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -23,9 +23,7 @@ if(NOT pybind11_json_FOUND)
+   include(ExternalProject)
+   set(pybind11_json_version 0fbbe3bbb27bd07a5ec7d71cbb1f17eaf4d37702)
+   ExternalProject_Add(pybind11_json-${pybind11_json_version}
+-    GIT_REPOSITORY https://github.com/pybind/pybind11_json.git
+-    GIT_TAG ${pybind11_json_version}
+-    GIT_CONFIG advice.detachedHead=false
++    URL ${CMAKE_CURRENT_SOURCE_DIR}/pybind11_json-${pybind11_json_version}.tar.gz
+     # Suppress git update due to https://gitlab.kitware.com/cmake/cmake/-/issues/16419
+     UPDATE_COMMAND ""
+     CMAKE_ARGS

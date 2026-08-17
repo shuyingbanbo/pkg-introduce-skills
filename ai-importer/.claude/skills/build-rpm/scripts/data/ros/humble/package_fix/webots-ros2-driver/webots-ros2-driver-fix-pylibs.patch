@@ -1,0 +1,11 @@
+--- ros-humble-webots-ros2-driver-2023.0.2/CMakeLists.txt_org	2023-05-07 21:48:41.122774606 +0800
++++ ros-humble-webots-ros2-driver-2023.0.2/CMakeLists.txt	2023-05-07 21:48:49.619782644 +0800
+@@ -37,7 +37,7 @@
+ if($ENV{ROS_DISTRO} MATCHES "foxy")
+   find_package(PythonLibs 3.8 EXACT REQUIRED)
+ else()
+-  find_package(PythonLibs 3.10 EXACT REQUIRED)
++  find_package(PythonLibs 3.9 EXACT REQUIRED)
+ endif()
+ 
+ add_custom_target(compile-lib-controller ALL

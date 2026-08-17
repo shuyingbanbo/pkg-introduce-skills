@@ -1,0 +1,21 @@
+diff -Naur ros-humble-rviz-ogre-vendor-11.2.5_org/CMakeLists.txt ros-humble-rviz-ogre-vendor-11.2.5/CMakeLists.txt
+--- ros-humble-rviz-ogre-vendor-11.2.5_org/CMakeLists.txt	2023-04-29 22:50:36.095831452 +0800
++++ ros-humble-rviz-ogre-vendor-11.2.5/CMakeLists.txt	2023-04-30 11:34:13.986925494 +0800
+@@ -162,8 +162,7 @@
+   find_package(Patch REQUIRED)
+   include(ExternalProject)
+   ExternalProject_Add(ogre-v1.12.1
+-    URL https://github.com/OGRECave/ogre/archive/v1.12.1.zip
+-    URL_MD5 cdbea4006d223c173e0a93864111b936
++    URL ${CMAKE_CURRENT_SOURCE_DIR}/ogre-rm-Media-1.12.1.tar.gz
+     TIMEOUT 1200
+     LOG_CONFIGURE ${should_log}
+     LOG_BUILD ${should_log}
+@@ -185,6 +184,7 @@
+       -DOGRE_BUILD_COMPONENT_JAVA:BOOL=FALSE
+       -DOGRE_BUILD_COMPONENT_CSHARP:BOOL=FALSE
+       -DOGRE_BUILD_COMPONENT_BITES:BOOL=FALSE
++      -DOGRE_ENABLE_PRECOMPILED_HEADERS:BOOL=FALSE
+       ${extra_cmake_args}
+       -Wno-dev
+     PATCH_COMMAND

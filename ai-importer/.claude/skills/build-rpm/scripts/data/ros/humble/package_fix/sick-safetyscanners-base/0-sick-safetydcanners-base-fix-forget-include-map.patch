@@ -1,0 +1,15 @@
+diff --git a/include/sick_safetyscanners_base/data_processing/UDPPacketMerger.h b/include/sick_safetyscanners_base/data_processing/UDPPacketMerger.h
+index b14d925..5cde02c 100644
+--- a/include/sick_safetyscanners_base/data_processing/UDPPacketMerger.h
++++ b/include/sick_safetyscanners_base/data_processing/UDPPacketMerger.h
+@@ -40,6 +40,7 @@
+ 
+ #include "sick_safetyscanners_base/data_processing/ParseDatagramHeader.h"
+ 
++#include <map>
+ #include <algorithm>
+ #include <mutex>
+ 
+-- 
+2.41.0
+

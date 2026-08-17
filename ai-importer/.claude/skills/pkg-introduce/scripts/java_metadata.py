@@ -102,10 +102,30 @@ def extract_java_version(source_dir: str) -> str:
     return ""
 
 
+def detect_java_build_system(source_dir: str) -> str:
+    """探测 Java 项目的构建系统："maven" | "gradle" | "unknown"。
+
+    pom.xml 存在 → maven（优先；存在 pom+gradle 混合项目，maven 设施可用）。
+    否则存在 build.gradle(.kts)/settings.gradle(.kts) → gradle。
+    都没有 → unknown。
+    """
+    src = Path(source_dir)
+    if (src / "pom.xml").exists():
+        return "maven"
+    for filename in ("build.gradle", "build.gradle.kts",
+                     "settings.gradle", "settings.gradle.kts"):
+        if (src / filename).exists():
+            return "gradle"
+    return "unknown"
+
+
 if __name__ == "__main__":
     import sys
 
-    if len(sys.argv) != 3 or sys.argv[1] != "version":
-        print("usage: java_metadata.py version <source-dir>", file=sys.stderr)
+    if len(sys.argv) != 3 or sys.argv[1] not in ("version", "build-system"):
+        print("usage: java_metadata.py version|build-system <source-dir>", file=sys.stderr)
         sys.exit(2)
-    print(extract_java_version(sys.argv[2]))
+    if sys.argv[1] == "version":
+        print(extract_java_version(sys.argv[2]))
+    else:
+        print(detect_java_build_system(sys.argv[2]))

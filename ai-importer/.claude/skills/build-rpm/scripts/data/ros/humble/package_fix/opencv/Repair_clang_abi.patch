@@ -1,0 +1,39 @@
+diff -Npur opencv-4.5.2/modules/core/include/opencv2/core/types.hpp opencv-4.5.2-new/modules/core/include/opencv2/core/types.hpp
+--- opencv-4.5.2/modules/core/include/opencv2/core/types.hpp	2021-11-17 10:30:22.631203192 +0800
++++ opencv-4.5.2-new/modules/core/include/opencv2/core/types.hpp	2021-11-17 10:34:53.117761924 +0800
+@@ -162,7 +162,7 @@ public:
+     //! default constructor
+     Point_();
+     Point_(_Tp _x, _Tp _y);
+-#if (defined(__GNUC__) && __GNUC__ < 5)
++#if (defined(__GNUC__) && __GNUC__ < 5) && !defined(__clang__)
+     Point_(const Point_& pt);
+     Point_(Point_&& pt) CV_NOEXCEPT = default;
+ #elif OPENCV_ABI_COMPATIBILITY < 500
+@@ -172,7 +172,7 @@ public:
+     Point_(const Size_<_Tp>& sz);
+     Point_(const Vec<_Tp, 2>& v);
+ 
+-#if (defined(__GNUC__) && __GNUC__ < 5)
++#if (defined(__GNUC__) && __GNUC__ < 5) && !defined(__clang__)
+     Point_& operator = (const Point_& pt);
+     Point_& operator = (Point_&& pt) CV_NOEXCEPT = default;
+ #elif OPENCV_ABI_COMPATIBILITY < 500
+@@ -1186,7 +1186,7 @@ template<typename _Tp> inline
+ Point_<_Tp>::Point_(_Tp _x, _Tp _y)
+     : x(_x), y(_y) {}
+ 
+-#if (defined(__GNUC__) && __GNUC__ < 5)
++#if (defined(__GNUC__) && __GNUC__ < 5) && !defined(__clang__)
+ template<typename _Tp> inline
+ Point_<_Tp>::Point_(const Point_& pt)
+     : x(pt.x), y(pt.y) {}
+@@ -1208,7 +1208,7 @@ template<typename _Tp> inline
+ Point_<_Tp>::Point_(const Vec<_Tp,2>& v)
+     : x(v[0]), y(v[1]) {}
+ 
+-#if (defined(__GNUC__) && __GNUC__ < 5)
++#if (defined(__GNUC__) && __GNUC__ < 5) && !defined(__clang__)
+ template<typename _Tp> inline
+ Point_<_Tp>& Point_<_Tp>::operator = (const Point_& pt)
+ {

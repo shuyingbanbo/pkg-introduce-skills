@@ -1,0 +1,4 @@
+
+# The unittest are compiling takes too long,
+# so remove them from package
+Patch0: pilz-industrial-motion-planner-remove-test.patch

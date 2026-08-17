@@ -41,19 +41,23 @@ GLIBC_BUILTINS = {"pthread", "m", "dl", "c", "rt", "gcc_s", "stdc++", "resolv", 
 
 # ── 1. 源码解析 ───────────────────────────────────────────────────────────────
 
-def parse_cargo_toml(source_dir: str) -> Dict:
+def parse_cargo_toml(source_dir: str, manifest_path: str = "") -> Dict:
     """
     解析 Cargo.toml，提取：
     - rust-version / edition
     - links 字段（声明链接的系统库）
     - build-dependencies（build.rs 用到的 crate，如 pkg-config、cc）
+    - crate_deps（[dependencies] 等段的 crate 名清单，vendor 解决，标记 vendor_only）
+
+    manifest_path 非空时直接解析该文件（混合包场景：Cargo.toml 在子目录，
+    如 pendulum 的 rust/Cargo.toml）；否则取 <source_dir>/Cargo.toml。
     """
-    cargo_toml = Path(source_dir) / "Cargo.toml"
+    cargo_toml = Path(manifest_path) if manifest_path else Path(source_dir) / "Cargo.toml"
     if not cargo_toml.exists():
-        return {"found": False, "rust_version": "", "links": [], "build_deps": []}
+        return {"found": False, "rust_version": "", "links": [], "build_deps": [], "crate_deps": []}
 
     content = cargo_toml.read_text(errors="ignore")
-    result: Dict = {"found": True, "rust_version": "", "links": [], "build_deps": []}
+    result: Dict = {"found": True, "rust_version": "", "links": [], "build_deps": [], "crate_deps": []}
 
     # rust-version = "1.65"
     m = re.search(r'^rust-version\s*=\s*"([^"]+)"', content, re.MULTILINE)
@@ -72,17 +76,28 @@ def parse_cargo_toml(source_dir: str) -> Dict:
         if lib not in GLIBC_BUILTINS:
             result["links"].append(lib)
 
-    # [build-dependencies] 中的 pkg-config / cc / cmake crate
+    # 依赖段 crate 名提取：[dependencies] / [build-dependencies] / [dev-dependencies]
+    # / [target.'cfg(...)'.dependencies] 统一按 *dependencies 段处理。
+    # crate 由父包 cargo vendor 整体解决，标记 vendor_only（不进 dep_registry、
+    # 不写 BuildRequires），清单供 precheck/supervisor 做 crate 身份判定。
     in_build_deps = False
+    in_deps = False
+    seen_crates: Set[str] = set()
     for line in content.splitlines():
         line = line.strip()
-        if re.match(r'^\[.*build-dependencies.*\]', line):
-            in_build_deps = True
+        if re.match(r'^\[.*\]\s*$', line):
+            in_build_deps = bool(re.match(r'^\[.*build-dependencies.*\]', line))
+            in_deps = bool(re.match(r'^\[.*dependencies.*\]', line))
             continue
-        if line.startswith("[") and in_build_deps:
-            in_build_deps = False
+        if in_deps:
+            m = re.match(r'^"?([\w-]+)"?\s*=', line)
+            if m:
+                crate = m.group(1)
+                if crate not in seen_crates:
+                    seen_crates.add(crate)
+                    result["crate_deps"].append({"name": crate, "vendor_only": True})
         if in_build_deps:
-            m = re.match(r'^([\w-]+)\s*=', line)
+            m = re.match(r'^"?([\w-]+)"?\s*=', line)
             if m:
                 result["build_deps"].append(m.group(1))
 
@@ -266,6 +281,8 @@ def main():
     parser = argparse.ArgumentParser(description="Rust 包 RPM 依赖分析")
     parser.add_argument("source_dir", help="Rust 项目源码目录")
     parser.add_argument("--check-rpm", action="store_true", help="在容器内查询 RPM 可用性")
+    parser.add_argument("--manifest-path", default="",
+                        help="Cargo.toml 路径（混合包场景，默认 <source_dir>/Cargo.toml）")
     parser.add_argument("-o", "--output", default="", help="结果输出到 JSON 文件")
     args = parser.parse_args()
 
@@ -274,11 +291,14 @@ def main():
         print(f"[ERROR] 目录不存在: {source_dir}", file=sys.stderr)
         sys.exit(1)
 
+    # build.rs / 内嵌 C 源码在 Cargo.toml 所在 crate 目录内扫描
+    crate_dir = str(Path(args.manifest_path).parent) if args.manifest_path else source_dir
+
     print(f"[INFO] 分析目录: {source_dir}")
 
-    cargo_toml = parse_cargo_toml(source_dir)
-    build_rs   = scan_build_rs(source_dir)
-    c_sources  = scan_c_sources(source_dir)
+    cargo_toml = parse_cargo_toml(source_dir, args.manifest_path)
+    build_rs   = scan_build_rs(crate_dir)
+    c_sources  = scan_c_sources(crate_dir)
 
     if not cargo_toml["found"]:
         print("[WARN] 未找到 Cargo.toml，可能不是 Rust 项目", file=sys.stderr)
@@ -312,6 +332,7 @@ def main():
             "rust_version": cargo_toml.get("rust_version", ""),
             "edition": cargo_toml.get("edition", ""),
             "links": cargo_toml.get("links", []),
+            "crate_deps": cargo_toml.get("crate_deps", []),
             "pkg_configs": all_pkg_configs,
             "link_libs": all_link_libs,
             "c_sources": c_sources,

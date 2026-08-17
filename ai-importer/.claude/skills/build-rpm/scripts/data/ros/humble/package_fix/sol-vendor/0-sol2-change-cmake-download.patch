@@ -1,0 +1,16 @@
+diff --git a/cmake/Packages/FindLuaBuild/LuaVanilla.cmake b/cmake/Packages/FindLuaBuild/LuaVanilla.cmake
+index b95e5a6..d4d8e3f 100644
+--- a/cmake/Packages/FindLuaBuild/LuaVanilla.cmake
++++ b/cmake/Packages/FindLuaBuild/LuaVanilla.cmake
+@@ -95,7 +95,7 @@ endif()
+ 
+ # # Source files for natural build, if we have to go that far
+ # retrieve source files
+-set(LUA_VANILLA_DOWNLOAD_URL https://www.lua.org/ftp/lua-${LUA_VANILLA_VERSION}.tar.gz)
++set(LUA_VANILLA_DOWNLOAD_URL ${CMAKE_SOURCE_DIR}/lua-${LUA_VANILLA_VERSION}.tar.gz)
+ if (LUA_VANILLA_VERSION MATCHES "^5\\.1")
+ 	set(LUA_VANILLA_LIB_SOURCES lapi.c lcode.c ldebug.c ldo.c ldump.c lfunc.c 
+ 		lgc.c llex.c lmem.c lobject.c lopcodes.c lparser.c lstate.c 
+-- 
+2.41.0
+

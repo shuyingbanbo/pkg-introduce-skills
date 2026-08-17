@@ -1,0 +1,13 @@
+diff -Naur ros-humble-foonathan-memory-vendor-1.2.0_org/CMakeLists.txt ros-humble-foonathan-memory-vendor-1.2.0/CMakeLists.txt
+--- ros-humble-foonathan-memory-vendor-1.2.0_org/CMakeLists.txt	2022-04-20 08:29:13.000000000 +0800
++++ ros-humble-foonathan-memory-vendor-1.2.0/CMakeLists.txt	2023-04-25 11:06:06.287876659 +0800
+@@ -71,8 +71,7 @@
+   endif()
+ 
+   externalproject_add(foo_mem-ext
+-  GIT_REPOSITORY https://github.com/foonathan/memory.git
+-  GIT_TAG v0.7-1
++  URL ${CMAKE_CURRENT_SOURCE_DIR}/memory-0.7-1.tar.gz
+   TIMEOUT 600
+   # Avoid the update (git pull) and so the recompilation of foonathan_memory library each time.
+   UPDATE_COMMAND ""

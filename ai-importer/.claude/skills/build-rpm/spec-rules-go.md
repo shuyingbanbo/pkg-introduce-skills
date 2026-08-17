@@ -65,20 +65,16 @@ go mod verify
 
 #### B. 预生成 vendor（上游无 vendor/）
 
+> COPR 模式下无 `SESSION_CONTAINER`（pkg-builder.md 明确标注），以下命令直接在
+> 当前工作目录本地执行，不经过容器。`go mod vendor` 本身需要联网拉取模块源码
+> 才能生成 vendor（这是预检/构建准备阶段，不是离线的 rpmbuild 执行阶段），
+> 与 pre_check_deps.py 里 dnf repoquery 联网查询社区源用的是同一个执行环境。
+
 ```bash
-# 在容器内预生成（action_type=vendor_fetch，必须记录到 build_actions.json）
-docker exec ${SESSION_CONTAINER} bash -c "
-  cd /build/source
-  go mod vendor
-  # 验证版本一致性
-  go mod verify
-"
+# action_type=vendor_fetch，必须记录到 build_actions.json
+(cd ./sources/${pkgname} && go mod vendor && go mod verify)
 # 将 vendor/ 打包为额外 Source
-docker exec ${SESSION_CONTAINER} bash -c "
-  cd /build/source && tar czf /tmp/${pkgname}-vendor.tar.gz vendor/
-"
-docker cp ${SESSION_CONTAINER}:/tmp/${pkgname}-vendor.tar.gz \
-  ./sources/${pkgname}/${pkgname}-vendor.tar.gz
+tar czf ./sources/${pkgname}/${pkgname}-vendor.tar.gz -C ./sources/${pkgname} vendor/
 ```
 
 spec 中声明：
@@ -99,6 +95,40 @@ go build -v -o %{name} ./...
 - vendor/ 必须由 `go mod vendor` 在与 go.sum **完全相同的 go.mod** 上生成
 - 不得手动修改 vendor/ 中的文件（review-rpm 会检测 `vendor_direct_edit`）
 - 若需 patch 依赖，使用 `%prep` 中的 `sed`/`patch` 而不是直接编辑
+
+### 2.4 混合包变体（主语言非 go，源码内含 go.mod）
+
+适用场景：主包是 python / c / cpp / nodejs 等语言，但源码内嵌 go 组件
+（precheck 的 `secondary_langs` 含 `go`，`secondary_manifests["go"]` 给出
+go.mod 相对路径）。go 部分的 module 依赖处理与纯 go vendor 路径相同：
+
+```bash
+# vendor_fetch（必须记录到 build_actions.json）：在 go.mod 所在目录执行
+MANIFEST_DIR=./sources/${pkgname}/<secondary_manifests["go"] 的父目录>
+(cd $MANIFEST_DIR && go mod vendor && go mod verify)
+tar czf ./sources/${pkgname}/${pkgname}-vendor.tar.gz -C $MANIFEST_DIR vendor/
+```
+
+spec 中声明：
+
+```spec
+BuildRequires: golang
+Source1: %{name}-vendor.tar.gz
+
+%prep
+%autosetup -n %{name}-%{version}
+# 在 go.mod 所在目录解 vendor（以 secondary_manifests 路径为准）
+tar xf %{SOURCE1} -C <manifest父目录>
+
+%build
+# 主语言构建系统中触发 go build 时，在 go.mod 所在目录加 -mod=vendor
+(cd <manifest父目录> && go build -mod=vendor ...)
+```
+
+**注意**：
+- 主语言的依赖检查、BuildRequires、spec 结构仍按主语言规则执行，本节只追加 go 部分
+- module 依赖**不写入** BuildRequires、**不得**用 register-dep.py 注册（由 vendor 保证）
+- CGO 系统库按 pre_check.json 的 `c_library_build_requires[]` 照常填入
 
 ## 3. CGO 处理
 

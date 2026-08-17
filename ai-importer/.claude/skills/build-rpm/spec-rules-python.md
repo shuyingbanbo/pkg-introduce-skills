@@ -103,7 +103,7 @@ BuildRequires:  python3-<build-backend-rpm-name>
 
 **%files：**
 ```spec
-%files -n python3-<rpm_pkg_name_suffix>
+%files -n python3-%{pypi_name}
 %license LICENSE
 %{python3_sitelib}/<module>/
 %{python3_sitelib}/<dist_name>-%{version}*.dist-info/
@@ -131,12 +131,12 @@ pip3 wheel --no-build-isolation --no-deps --wheel-dir %{_builddir}/wheels .
 pip3 install --no-build-isolation --no-index \
     --find-links %{_builddir}/wheels \
     --root %{buildroot} --prefix /usr \
-    %{name}==%{version}
+    %{pypi_name}==%{version}
 ```
 
 **%files：**
 ```spec
-%files -n python3-<rpm_pkg_name_suffix>
+%files -n python3-%{pypi_name}
 %license LICENSE
 %{python3_sitelib}/<module_dir>/
 %{python3_sitelib}/<dist_name>-%{version}*.dist-info/
@@ -165,7 +165,7 @@ BuildRequires:  python3-setuptools
 
 **%files：**
 ```spec
-%files -n python3-<rpm_pkg_name_suffix>
+%files -n python3-%{pypi_name}
 %license LICENSE
 %{python3_sitelib}/<module_dir>/
 %{python3_sitelib}/<dist_name>-%{version}*.egg-info/
@@ -194,7 +194,7 @@ pip3 wheel --no-build-isolation --no-deps --wheel-dir %{_builddir}/wheels .
 pip3 install --no-build-isolation --no-index \
     --find-links %{_builddir}/wheels \
     --root %{buildroot} --prefix /usr \
-    %{name}==%{version}
+    %{pypi_name}==%{version}
 ```
 
 ---
@@ -221,10 +221,17 @@ BuildRequires:  python3-setuptools
 BuildRequires:  gcc
 # 若源码有 CMakeLists.txt，必须加：
 # BuildRequires:  cmake
-# BuildRequires:  libuv-devel   （按实际依赖添加）
+# 链接的系统库 -devel 包（如 libpq-devel）：见下方"链接库"说明
 # 若有 .pyx 文件：
 # BuildRequires:  python3-Cython
 ```
+
+> **链接库 BuildRequires**：C 扩展链接的系统库（如 `libpq-devel`、`openssl-devel`）
+> 不要靠猜。预检阶段已从 `setup.py` 的 `Extension(libraries=[...])` 和 `.pyx` 的
+> `# distutils: libraries` 声明中解析链接库，并在目标 chroot 源中验证存在性，结果写入
+> `pre_check.json` 的 `c_library_build_requires[]`。**直接读该字段填入 BuildRequires**。
+> 该字段只含已验证存在的包；若某链接库没被解析出来或源中不存在（如库名是变量拼接、
+> 或用 pkg-config 动态探测），则不在字段中，交由构建失败诊断循环（`fatal error: xxx.h`）兜底。
 
 > **重要**：若源码目录存在 `CMakeLists.txt`，必须加 `BuildRequires: cmake`，
 > 否则 cmake 生成的头文件（如 `encodings.h`）不会生成，`%build` 会报 `No such file or directory`。
@@ -242,7 +249,7 @@ BuildRequires:  gcc
 
 **%files：**
 ```spec
-%files -n python3-<rpm_pkg_name_suffix>
+%files -n python3-%{pypi_name}
 %license LICENSE
 %{python3_sitearch}/<module>/
 %{python3_sitearch}/<dist_name>-%{version}*.egg-info/
@@ -255,7 +262,9 @@ BuildRequires:  gcc
 所有方案共用以下 spec 骨架，只有 BuildRequires / %build / %install / %files 部分按方案替换。
 
 ```spec
-Name:           python-<srpm_name>
+%global pypi_name <pypi_name>
+
+Name:           python-%{pypi_name}
 Version:        <version>
 Release:        1%{?dist}
 Summary:        <one-line summary>
@@ -268,20 +277,20 @@ BuildArch:      noarch          # C 扩展包删除此行
 <multi-line description>
 
 
-%package -n python3-<rpm_pkg_name_suffix>
+%package -n python3-%{pypi_name}
 Summary:        <one-line summary>
-Provides:       python-<name>
-Provides:       python3dist(<pypi_name>) = %{version}
+Provides:       python-%{pypi_name}
+Provides:       python3dist(%{pypi_name}) = %{version}
 <BuildRequires 按方案填写>
 <Requires 只写运行时必须的包>
 
-%description -n python3-<rpm_pkg_name_suffix>
+%description -n python3-%{pypi_name}
 <multi-line description>
 
 
 %package help
-Summary:        Development documents and examples for <name>
-Provides:       python3-<rpm_pkg_name_suffix>-doc
+Summary:        Development documents and examples for %{pypi_name}
+Provides:       python3-%{pypi_name}-doc
 %description help
 <multi-line description>
 
@@ -293,7 +302,7 @@ Provides:       python3-<rpm_pkg_name_suffix>-doc
 <build / install 按方案填写>
 
 
-%files -n python3-<rpm_pkg_name_suffix>
+%files -n python3-%{pypi_name}
 <按方案填写>
 
 %files help
@@ -312,12 +321,18 @@ Provides:       python3-<rpm_pkg_name_suffix>-doc
 ### 命名规则（双包模式）
 
 openEuler 社区采用**双包模式**：SRPM 用 `python-` 前缀，二进制包用 `python3-` 前缀。
+spec 顶部必须声明 `%global pypi_name`，后续字段通过 `%{pypi_name}` 引用，避免硬编码包名导致 pip 无法识别。
 
 | 字段 | 规则 | 示例（PyPI 名 `requests`） |
 |------|------|--------------------------|
-| `Name:`（SRPM 名） | `python-<normalized>` | `python-requests` |
-| `%package -n`（二进制包名） | `python3-<normalized>` | `python3-requests` |
+| `%global pypi_name` | 定义 PyPI 名 | `%global pypi_name requests` |
+| `Name:`（SRPM 名） | `python-%{pypi_name}` | `python-%{pypi_name}` → `python-requests` |
+| `%package -n`（二进制包名） | `python3-%{pypi_name}` | `python3-%{pypi_name}` → `python3-requests` |
 | `Requires:` | `python3-<dep>` | `python3-click >= 8.0` |
+| `pip3 install` 目标 | `%{pypi_name}` | `%{pypi_name}==%{version}` → pip 可识别 |
+
+> **为什么必须用 `%{pypi_name}`**：`%{name}` 展开为 `python-requests`（含前缀），pip 不识别 RPM 包名。
+> `%{pypi_name}` 展开为 `requests`，与 `pip3 wheel` 产出的 wheel 文件名匹配。
 
 特殊情况：
 
@@ -327,9 +342,9 @@ openEuler 社区采用**双包模式**：SRPM 用 `python-` 前缀，二进制�
 | PyPI 名含 `python-` 前缀 | `python-python-multipart` | `python3-python-multipart` |
 | 大写名（Django）| `python-django` | `python3-django` |
 
-若其他包的 `Requires` 可能写成 `python3-<name>`，需在 spec 中显式声明：
+若其他包的 `Requires` 可能写成 `python3-%{pypi_name}`，需在 spec 中显式声明：
 ```spec
-Provides:       python3-<name> = %{version}-%{release}
+Provides:       python3-%{pypi_name} = %{version}-%{release}
 ```
 
 ### 版本格式

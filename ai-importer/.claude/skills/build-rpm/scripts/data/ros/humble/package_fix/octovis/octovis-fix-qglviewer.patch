@@ -1,0 +1,12 @@
+diff -Naur ros-humble-octovis-1.9.8_org/CMakeModules/FindQGLViewer.cmake ros-humble-octovis-1.9.8/CMakeModules/FindQGLViewer.cmake
+--- ros-humble-octovis-1.9.8_org/CMakeModules/FindQGLViewer.cmake	2023-05-07 16:18:21.306554894 +0800
++++ ros-humble-octovis-1.9.8/CMakeModules/FindQGLViewer.cmake	2023-05-07 16:18:51.832585299 +0800
+@@ -83,7 +83,7 @@
+ 	MESSAGE(STATUS "\t generating Makefile using qmake") 
+ 	EXECUTE_PROCESS(
+ 	  WORKING_DIRECTORY ${QGLVIEWER_BASE_DIR}
+-	  COMMAND qmake
++	  COMMAND qmake-qt5
+ 	  OUTPUT_QUIET
+ 	  )
+       ENDIF(QMAKE-QT4)

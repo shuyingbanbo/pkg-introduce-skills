@@ -1,0 +1,47 @@
+diff -Naur ros-humble-zstd-vendor-0.15.4_org/apply-patches ros-humble-zstd-vendor-0.15.4/apply-patches
+--- ros-humble-zstd-vendor-0.15.4_org/apply-patches	1970-01-01 08:00:00.000000000 +0800
++++ ros-humble-zstd-vendor-0.15.4/apply-patches	2023-04-25 17:55:33.603762587 +0800
+@@ -0,0 +1,13 @@
++#!/bin/bash
++
++tar -xf zstd-1.5.0.tar.gz
++cd zstd-1.5.0
++
++for p in `grep -P "^Patch\d+:" ../zstd.spec | awk '{print $2}'`
++do
++	patch -p1 < ../$p
++done
++
++cd ..
++mv zstd-1.5.0/* .
++
+diff -Naur ros-humble-zstd-vendor-0.15.4_org/CMakeLists.txt ros-humble-zstd-vendor-0.15.4/CMakeLists.txt
+--- ros-humble-zstd-vendor-0.15.4_org/CMakeLists.txt	2023-04-25 17:47:31.596701680 +0800
++++ ros-humble-zstd-vendor-0.15.4/CMakeLists.txt	2023-04-25 18:54:12.563311748 +0800
+@@ -31,9 +31,11 @@
+   # The CMakeLists.txt file for zstd is in a subdirectory.
+   # We need to configure the CMake command to build from there instead.
+   ExternalProject_Add(zstd-${zstd_version}
+-    GIT_REPOSITORY https://github.com/facebook/zstd.git
+-    GIT_TAG 10f0e6993f9d2f682da6d04aa2385b7d53cbb4ee  # v${zstd_version}
++    GIT_REPOSITORY https://gitee.com/src-openeuler/zstd.git
++    GIT_TAG openEuler-22.03-LTS-SP1
+     GIT_CONFIG advice.detachedHead=false
++    PATCH_COMMAND
++      sh ${CMAKE_CURRENT_SOURCE_DIR}/apply-patches
+     # Suppress git update due to https://gitlab.kitware.com/cmake/cmake/-/issues/16419
+     # See https://github.com/ament/uncrustify_vendor/pull/22 for details
+     UPDATE_COMMAND ""
+@@ -45,12 +47,6 @@
+       -DZSTD_BUILD_SHARED=ON
+       -DZSTD_BUILD_PROGRAMS=OFF
+       ${extra_cmake_args}
+-    # Note: zstd v1.4.6 will include the following fix. When that is released, upgrade and remove this patch.
+-    PATCH_COMMAND
+-      ${CMAKE_COMMAND} -E chdir <SOURCE_DIR> git apply -p1 --ignore-space-change --whitespace=nowarn
+-        ${CMAKE_CURRENT_SOURCE_DIR}/cmake_minimum_required_2.8.12.patch &&
+-      ${CMAKE_COMMAND} -E chdir <SOURCE_DIR> git apply -p1 --ignore-space-change --whitespace=nowarn
+-        ${CMAKE_CURRENT_SOURCE_DIR}/no_internal_headers.patch
+   )
+ 
+   install(

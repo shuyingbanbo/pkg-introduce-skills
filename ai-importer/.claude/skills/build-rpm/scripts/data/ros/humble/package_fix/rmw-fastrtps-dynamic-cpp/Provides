@@ -1,0 +1,5 @@
+Provides:       ros-%{ros_distro}-rmw-implementation-packages(member)
+
+%if 0%{?with_weak_deps}
+Supplements:    ros-%{ros_distro}-rmw-implementation-packages(all)
+%endif

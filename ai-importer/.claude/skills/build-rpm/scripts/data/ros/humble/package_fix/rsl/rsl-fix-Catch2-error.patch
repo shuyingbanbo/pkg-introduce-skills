@@ -1,0 +1,20 @@
+diff -Naur ros-humble-rsl-0.2.2_org/tests/CMakeLists.txt ros-humble-rsl-0.2.2/tests/CMakeLists.txt
+--- ros-humble-rsl-0.2.2_org/tests/CMakeLists.txt	2023-05-11 17:36:22.490110840 +0800
++++ ros-humble-rsl-0.2.2/tests/CMakeLists.txt	2023-05-11 17:38:07.594806701 +0800
+@@ -1,6 +1,9 @@
+-list(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
+ 
+ find_package(Catch2 3.3.0 REQUIRED)
++if (NOT Catch2_FOUND)
++	list(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
++endif()
++
+ find_package(range-v3 REQUIRED)
+ 
+ add_executable(test-rsl
+@@ -19,4 +22,5 @@
+     Catch2::Catch2WithMain
+     range-v3::range-v3
+ )
++include(Catch)
+ catch_discover_tests(test-rsl)

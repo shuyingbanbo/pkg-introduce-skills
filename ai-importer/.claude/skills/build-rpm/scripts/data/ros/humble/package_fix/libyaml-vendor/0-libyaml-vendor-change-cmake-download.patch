@@ -1,0 +1,14 @@
+diff -Naur ros-humble-libyaml-vendor-1.2.2_org/CMakeLists.txt ros-humble-libyaml-vendor-1.2.2/CMakeLists.txt
+--- ros-humble-libyaml-vendor-1.2.2_org/CMakeLists.txt	2023-04-26 17:16:59.663537006 +0800
++++ ros-humble-libyaml-vendor-1.2.2/CMakeLists.txt	2023-04-26 17:30:31.211425347 +0800
+@@ -61,9 +61,7 @@
+   endif()
+   include(ExternalProject)
+   externalproject_add(libyaml-0.2.5
+-    GIT_REPOSITORY https://github.com/yaml/libyaml.git
+-    GIT_TAG 2c891fc7a770e8ba2fec34fc6b545c672beb37e6  # 0.2.5
+-    GIT_CONFIG advice.detachedHead=false
++    URL ${CMAKE_CURRENT_SOURCE_DIR}/libyaml-0.2.5.tar.gz
+     # Suppress git update due to https://gitlab.kitware.com/cmake/cmake/-/issues/16419
+     # See https://github.com/ament/uncrustify_vendor/pull/22 for details
+     UPDATE_COMMAND ""

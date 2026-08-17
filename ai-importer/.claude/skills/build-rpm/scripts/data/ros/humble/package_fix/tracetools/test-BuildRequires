@@ -1,0 +1,5 @@
+-ros-%{ros_distro}-launch
+-ros-%{ros_distro}-launch-ros
+-ros-%{ros_distro}-tracetools-launch
+-ros-%{ros_distro}-tracetools-read
+-ros-%{ros_distro}-tracetools-trace

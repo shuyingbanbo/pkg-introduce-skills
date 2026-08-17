@@ -1,0 +1,11 @@
+--- ros-humble-menge-vendor-1.0.0.orig/CMakeLists.txt	2022-04-20 09:07:42.000000000 +0800
++++ ros-humble-menge-vendor-1.0.0/CMakeLists.txt	2023-06-16 13:07:51.959140547 +0800
+@@ -22,7 +22,7 @@
+ # find dependencies
+ find_package(ament_cmake REQUIRED)
+ find_package(PkgConfig REQUIRED)
+-pkg_check_modules(tinyxml REQUIRED tinyxml)
++find_library(tinyxml_LIBRARY NAMES tinyxml)
+ 
+ set(MENGE_SRC_DIR ${CMAKE_SOURCE_DIR}/src/Menge)
+ message("menge_source_dir " ${MENGE_SRC_DIR})

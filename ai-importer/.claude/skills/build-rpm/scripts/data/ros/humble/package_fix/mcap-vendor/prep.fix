@@ -1,0 +1,2 @@
+cp %{SOURCE1} .
+cp %{SOURCE2} .

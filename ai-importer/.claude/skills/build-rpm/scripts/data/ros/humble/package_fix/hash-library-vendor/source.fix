@@ -1,0 +1,2 @@
+Source1:        hash-library-hash_library_v8.tar.gz
+Patch0: 0-hash-library-vendor-change-cmake-download.patch

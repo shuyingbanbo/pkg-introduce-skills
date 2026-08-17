@@ -1,0 +1,48 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index a31964b..73394bb 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -323,9 +323,7 @@ include(ExternalProject)
+ set(EXTERNAL_INSTALL_LOCATION ${CMAKE_BINARY_DIR}/external)
+ externalproject_add(
+   tclap
+-  GIT_REPOSITORY http://git.code.sf.net/p/tclap/code
+-  GIT_TAG 1.4.0-rc1
+-  GIT_SHALLOW TRUE
++  URL ${CMAKE_SOURCE_DIR}/tclap-1.4.0-rc1.tar.gz
+   PREFIX ${EXTERNAL_INSTALL_LOCATION}
+   SOURCE_DIR ${EXTERNAL_INSTALL_LOCATION}/tclap
+   CMAKE_COMMAND ""
+@@ -338,9 +336,7 @@ include_directories(SYSTEM ${EXTERNAL_INSTALL_LOCATION}/tclap/include)
+ 
+ externalproject_add(
+   rapidjson
+-  GIT_REPOSITORY https://github.com/Tencent/rapidjson.git
+-  GIT_TAG v1.1.0
+-  GIT_SHALLOW TRUE
++  URL ${CMAKE_SOURCE_DIR}/rapidjson-v1.1.0.tar.gz
+   PREFIX ${EXTERNAL_INSTALL_LOCATION}
+   SOURCE_DIR ${EXTERNAL_INSTALL_LOCATION}/rapidjson
+   CMAKE_COMMAND ""
+@@ -357,9 +353,7 @@ include_directories(SYSTEM ${EXTERNAL_INSTALL_LOCATION}/rapidjson/include)
+ 
+ externalproject_add(
+   tabulate
+-  GIT_REPOSITORY https://github.com/p-ranav/tabulate.git
+-  GIT_TAG v1.4
+-  GIT_SHALLOW TRUE
++  URL ${CMAKE_SOURCE_DIR}/tabulate-v1.4.tar.gz
+   PREFIX ${EXTERNAL_INSTALL_LOCATION}
+   SOURCE_DIR ${EXTERNAL_INSTALL_LOCATION}/tabulate
+   PATCH_COMMAND sed -i "39d" "${EXTERNAL_INSTALL_LOCATION}/tabulate/include/tabulate/column.hpp"
+@@ -379,9 +373,7 @@ include_directories(SYSTEM ${EXTERNAL_INSTALL_LOCATION}/tabulate/include)
+ 
+ externalproject_add(
+   sole
+-  GIT_REPOSITORY https://github.com/r-lyeh-archived/sole.git
+-  GIT_TAG 1.0.2
+-  GIT_SHALLOW TRUE
++  URL ${CMAKE_SOURCE_DIR}/sole-1.0.2.tar.gz
+   PREFIX ${EXTERNAL_INSTALL_LOCATION}
+   SOURCE_DIR ${EXTERNAL_INSTALL_LOCATION}/sole
+   PATCH_COMMAND patch

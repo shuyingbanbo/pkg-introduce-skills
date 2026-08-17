@@ -1,0 +1,4 @@
+Source1:        v0.8.0.tar.gz
+Source2:        lz4.tar.gz
+
+Patch0:         0-mcap-vendor-change-cmake-download.patch

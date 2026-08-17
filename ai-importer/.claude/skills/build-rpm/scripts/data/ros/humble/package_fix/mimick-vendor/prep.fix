@@ -1,0 +1,2 @@
+cp %{SOURCE1} .
+cp ${RPM_SOURCE_DIR}/0-Mimick-remove-compile-flag-o0.patch .

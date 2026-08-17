@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse
 
-from rpm_batch_lookup import BatchLookupError, fallback_results, provides_query, run_batch_lookup
+from rpm_batch_lookup import BatchLookupError, fallback_results, name_glob_query, provides_query, run_batch_lookup
 from rpm_naming import get_rpm_pkg_name, get_srpm_name, rpm_name_from_pep508
 
 
@@ -135,6 +135,25 @@ BLOCKED_UPSTREAM_HOSTS = {
     "readthedocs.org",
 }
 
+# GitHub/Gitee/GitLab 保留路径前缀（不是用户/组织名）
+_RESERVED_BY_HOST = {
+    "github.com": {
+        "sponsors", "orgs", "apps", "topics", "collections",
+        "marketplace", "trending", "explore", "features",
+        "enterprise", "settings", "notifications", "login",
+        "join", "about", "pricing", "site", "readme",
+        "account", "dashboard", "codespaces", "gists",
+    },
+    "gitlab.com": {
+        "help", "explore", "users", "groups", "-",
+        "dashboard", "search",
+    },
+    "gitee.com": {
+        "organizations", "explore", "enterprises", "gists",
+    },
+    # bitbucket.org / atomgit.com / gitcode.com：暂无已知保留 namespace，保守留空
+}
+
 
 def normalize_repo_root(url: str) -> str:
     if not isinstance(url, str):
@@ -177,6 +196,10 @@ def classify_upstream_url(url: str) -> str:
     parts = [part for part in parsed.path.split("/") if part]
     if len(parts) < 2:
         return "invalid"
+    # 检查第一段是否是 Git 平台保留 namespace（如 github.com/sponsors/xxx）
+    reserved = _RESERVED_BY_HOST.get(host, set())
+    if parts[0].lower() in reserved:
+        return "invalid"
     if len(parts) == 2:
         return "trusted"
     if parts[2].lower() in SUSPICIOUS_PATH_SEGMENTS:
@@ -193,37 +216,49 @@ def normalize_candidate_upstream(url: str) -> str:
     return ""
 
 
+NON_REPO_PROJECT_URL_KEYS = {
+    "sponsor", "funding", "donation", "donate",
+    "twitter", "chat", "discord", "slack", "gitter",
+    "say thanks", "say thanks!",
+    "changelog", "release notes", "history", "documentation",
+}
+
 def candidate_urls_from_pypi_info(info: Dict) -> List[str]:
     candidates: List[str] = []
     project_urls = info.get("project_urls") or {}
     if isinstance(project_urls, dict):
+        # 第一轮：优先 key 匹配
         for preferred_key in PREFERRED_PROJECT_URL_KEYS:
             for key, value in project_urls.items():
                 if not value:
                     continue
                 if key.strip().lower() == preferred_key:
                     candidates.append(value)
-        for value in project_urls.values():
-            if value:
-                candidates.append(value)
+        # 第二轮：所有 project_urls（排除已知非仓库 key）
+        for key, value in project_urls.items():
+            if not value:
+                continue
+            if key.strip().lower() in NON_REPO_PROJECT_URL_KEYS:
+                continue
+            candidates.append(value)
     if info.get("home_page"):
         candidates.append(info["home_page"])
     return candidates
 
 
 def canonical_upstream_url(pypi_json: Optional[Dict], pypi_name: str) -> str:
-    """优先返回可信源码仓根地址；无法确认时返回空串。"""
+    """优先返回可信源码仓根地址；无法确认时返回空串。
+
+    候选 URL 的 norm（归约根）若被 classify 为 trusted，则接受。
+    这样深度 URL（如 tree/blob/issues 子路径）也能通过归约到 root 后胜出，
+    同时 Sponsor/Funding 等保留 namespace 被阻挡。
+    """
     if pypi_json:
         info = pypi_json.get("info", {})
-        normalized_candidates = []
         for url in candidate_urls_from_pypi_info(info):
-            normalized = normalize_candidate_upstream(url)
-            if normalized:
-                normalized_candidates.append((url, normalized, classify_upstream_url(url)))
-
-        for _, normalized, kind in normalized_candidates:
-            if kind == "trusted":
-                return normalized
+            norm = normalize_candidate_upstream(url)
+            if norm and classify_upstream_url(norm) == "trusted":
+                return norm
     return ""
 
 
@@ -436,6 +471,10 @@ def parse_local_deps(source_dir: str) -> Tuple[List[str], str]:
                 for dep in re.findall(r"""['"]([^'"]+)['"]""", inner):
                     dep = dep.strip()
                     if dep:
+                        # 检测未填充的模板占位符（如 numpy >={}），方便排查
+                        if re.search(r'[><=!~]+\s*\{\s*\}', dep):
+                            print(f"  [WARN] 本地约束含未填充占位符: {dep!r}，"
+                                  f"将由 merge_requires 降级到 PyPI 约束", file=sys.stderr)
                         requires.append(dep)
         if requires:
             backend = "flit" if "flit" in content else ("poetry" if "poetry" in content else "setuptools")
@@ -488,6 +527,42 @@ def scan_c_extensions_local(source_dir: str) -> Dict:
         "pyx_files": pyx_files[:5],
         "c_files": c_files[:5],
     }
+
+
+# glibc/编译器自带库，不对应额外的 -devel RPM，从链接库检测中排除
+_C_LIB_BUILTINS = {"m", "c", "pthread", "dl", "rt", "util", "resolv", "gcc_s", "stdc++"}
+
+
+def parse_extension_libraries(source_dir: str) -> List[str]:
+    """从 setup.py 的 Extension(libraries=[...]) 和 .pyx 的 `# distutils: libraries`
+    声明中静态提取需要链接的系统库名（仅解析显式声明，不执行任何代码）。
+
+    scan_c_extensions_local 函数只判断"有没有 C 扩展"，本函数进一步
+    回答"链接了哪些库"，供后续映射到 -devel RPM 包名。解析不出（如库名是变量拼接、
+    或用 pkg-config 动态探测）的情况，交给构建失败诊断循环兜底。
+    """
+    src = Path(source_dir)
+    libs: Set[str] = set()
+
+    # 1. setup.py 中的 Extension(..., libraries=['pq', 'ssl'], ...)
+    setup_py = src / "setup.py"
+    if setup_py.exists():
+        text = setup_py.read_text(errors="ignore")
+        for m in re.finditer(r"libraries\s*=\s*\[([^\]]*)\]", text):
+            for lit in re.findall(r"""['"]([^'"]+)['"]""", m.group(1)):
+                libs.add(lit.strip())
+
+    # 2. Cython .pyx 头部的 `# distutils: libraries = pq ssl`
+    for pyx in src.rglob("*.pyx"):
+        try:
+            head = pyx.read_text(errors="ignore")[:2000]
+        except OSError:
+            continue
+        for m in re.finditer(r"#\s*distutils:\s*libraries\s*=\s*(.+)", head):
+            for name in m.group(1).split():
+                libs.add(name.strip())
+
+    return sorted(n for n in libs if n and n.lower() not in _C_LIB_BUILTINS)
 
 
 # ── 4. 依赖并集合并 ───────────────────────────────────────────────────────────
@@ -597,11 +672,21 @@ def _extract_version_constraint(dep: str) -> str:
     return ""
 
 
+# 约束含未替换模板占位符的模式：>= {}、< {}、== {} 等
+_TEMPLATE_PLACEHOLDER_RE = re.compile(r'[><=!~]+\s*\{\s*\}')
+
+
+def _constraint_is_broken(spec: str) -> bool:
+    """检测 spec 中的约束是否包含未填充的模板占位符（如 >= {}）。"""
+    return bool(_TEMPLATE_PLACEHOLDER_RE.search(spec))
+
+
 def merge_requires(pypi_requires: List[str], local_requires: List[str]) -> List[str]:
     """
     合并 PyPI 和本地解析的依赖。
-    策略：本地 pyproject.toml 为主，PyPI 仅补充本地没有的包。
-    若同名包的版本约束不一致，忽略 PyPI 的约束，以本地为准。
+    策略：本地 pyproject.toml / setup.py 为主，PyPI 仅补充本地没有的包。
+    若本地解析出的约束含未填充模板占位符（如 >= {}），
+    则降级使用 PyPI 的真实约束覆盖本地脏数据。
     """
     seen: Dict[str, str] = {}  # normalized_name -> original_spec
 
@@ -611,7 +696,7 @@ def merge_requires(pypi_requires: List[str], local_requires: List[str]) -> List[
         if key:
             seen[key] = dep
 
-    # PyPI 仅补充本地没有的包，且版本约束与本地一致时才采用
+    # PyPI 补充本地没有的包；若本地约束是模板占位符，用 PyPI 真实约束覆盖
     for dep in pypi_requires:
         key = _extract_pkg_key(dep)
         if not key:
@@ -619,7 +704,9 @@ def merge_requires(pypi_requires: List[str], local_requires: List[str]) -> List[
         if key not in seen:
             # 本地没有这个包，从 PyPI 补充
             seen[key] = dep
-        # 本地已有同名包：忽略 PyPI 版本，以本地为准，不覆盖
+        elif _constraint_is_broken(seen[key]):
+            # 本地解析出模板占位符（如 numpy >={}），用 PyPI 真实约束覆盖
+            seen[key] = dep
 
     return list(seen.values())
 
@@ -728,6 +815,54 @@ def check_rpm_availability(requires: List[str] = None, pypi_metadata: Optional[D
             })
 
     return {"available": available, "missing": missing, "version_conflict": version_conflict}
+
+
+def check_c_library_rpms(lib_names: List[str], chroot: Optional[str] = None) -> Dict:
+    """把 C 扩展链接的系统库名映射到 -devel RPM 包名（三级查询，与 analyze_c_deps
+    的 link_lib 路径一致：pkgconfig → cmake → lib*-devel / *-devel）。
+
+    只返回在目标 chroot 源中确实存在的包（available）；查不到的（missing）不做处理，
+    交给构建失败诊断循环兜底，避免写入未经验证的 BuildRequires。查询本身失败时
+    （无 dnf / 网络问题）也返回空 available，保持保守。
+    """
+    if not lib_names:
+        return {"available": [], "missing": []}
+
+    tasks = []
+    for lib in lib_names:
+        low = lib.lower()
+        tasks.append({
+            "dep": lib,
+            "name": lib,
+            "rpm_name": f"{low}-devel",
+            "prefer_devel": True,
+            "queries": [
+                provides_query(f"pkgconfig({low})", "pkgconfig()"),
+                provides_query(f"cmake({lib})", "cmake()"),
+                name_glob_query(f"lib{low}*-devel", "name-glob", prefer_devel=True),
+                name_glob_query(f"{low}*-devel", "name-glob", prefer_devel=True),
+            ],
+        })
+
+    chroot_info = f"，chroot={chroot}" if chroot else ""
+    print(f"\n[INFO] 查询 C 扩展链接库的 -devel RPM（{len(tasks)} 个{chroot_info}）...")
+    try:
+        results = run_batch_lookup(tasks, timeout=120, chroot=chroot)
+    except (BatchLookupError, OSError, json.JSONDecodeError) as e:
+        print(f"[WARN] C 库 RPM 查询失败（{e}），跳过（交由构建失败循环兜底）")
+        return {"available": [], "missing": [{"lib": t["dep"]} for t in tasks]}
+
+    available, missing = [], []
+    for item in results:
+        lib = item["dep"]
+        rpm = item.get("rpm")
+        if rpm:
+            print(f"  ✓ lib {lib:<30} → {rpm}")
+            available.append({"lib": lib, "rpm": rpm, "level": item.get("level", "")})
+        else:
+            print(f"  ✗ lib {lib:<30} → 未找到（交由构建失败循环兜底）")
+            missing.append({"lib": lib})
+    return {"available": available, "missing": missing}
 
 
 # ── 6. 报告输出 ───────────────────────────────────────────────────────────────
@@ -911,9 +1046,16 @@ def main():
         pypi_metadata = collect_pypi_metadata(merged + build_sys_requires)
         print(f"  ✓ 已获取 {len(pypi_metadata)} 个依赖的 PyPI 元数据")
 
+    # ── C 扩展链接库检测──
+    # 仅当检测到本地 C 扩展时才解析链接库并查 -devel RPM，纯 Python 包跳过。
+    c_libs = parse_extension_libraries(source_dir) if c_ext_local["has_c_ext"] else []
+    if c_libs:
+        print(f"\n[INFO] C 扩展声明链接库: {c_libs}")
+
     # ── dnf 查询 ──
     rpm_check = None
     build_sys_rpm_check = None
+    c_library_rpm_check = None
     if args.check_rpm:
         if not merged:
             print("[INFO] 无运行时依赖，跳过 RPM 查询")
@@ -924,6 +1066,8 @@ def main():
             print(f"\n[INFO] 查询构建系统依赖 RPM 可用性...")
             build_sys_rpm_check = check_rpm_availability(requires=build_sys_requires, pypi_metadata=pypi_metadata,
                                                          chroot=args.chroot or None)
+        if c_libs:
+            c_library_rpm_check = check_c_library_rpms(c_libs, chroot=args.chroot or None)
 
     print_report(source_dir, pkg_name, version,
                  pypi_requires, local_requires, merged, build_backend,
@@ -948,8 +1092,10 @@ def main():
             "build_sys_dependency_items": build_dependency_items(build_sys_requires, pypi_metadata),
             "c_ext_pypi": c_ext_pypi,
             "c_ext_local": c_ext_local,
+            "c_libraries": c_libs,
             "rpm_check": rpm_check,
             "build_sys_rpm_check": build_sys_rpm_check,
+            "c_library_rpm_check": c_library_rpm_check,
             "build_requires": build_rpm_requires(c_ext_local, rpm_check, build_sys_rpms),
         }
         with open(args.output, "w", encoding="utf-8") as f:

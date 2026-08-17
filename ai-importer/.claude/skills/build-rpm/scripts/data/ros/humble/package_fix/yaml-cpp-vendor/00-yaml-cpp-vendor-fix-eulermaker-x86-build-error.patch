@@ -1,0 +1,14 @@
+diff -Naur ros-humble-yaml-cpp-vendor-8.0.2_org/yaml_cpp_vendor-extras.cmake.in ros-humble-yaml-cpp-vendor-8.0.2/yaml_cpp_vendor-extras.cmake.in
+--- ros-humble-yaml-cpp-vendor-8.0.2_org/yaml_cpp_vendor-extras.cmake.in	2023-06-10 14:17:04.259752071 +0800
++++ ros-humble-yaml-cpp-vendor-8.0.2/yaml_cpp_vendor-extras.cmake.in	2023-06-10 14:17:28.876907884 +0800
+@@ -12,6 +12,10 @@
+   find_package(yaml-cpp CONFIG REQUIRED QUIET)
+ endif()
+ 
++set_target_properties(yaml-cpp PROPERTIES
++        IMPORTED_LOCATION_RELEASE "/usr/lib64/libyaml-cpp.so.${yaml-cpp_VERSION}"
++)
++
+ set(yaml_cpp_vendor_LIBRARIES ${YAML_CPP_LIBRARIES})
+ set(yaml_cpp_vendor_INCLUDE_DIRS ${YAML_CPP_INCLUDE_DIR})
+ 

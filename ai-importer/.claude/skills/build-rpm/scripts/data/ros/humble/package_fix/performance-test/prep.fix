@@ -1,0 +1,1 @@
+cp %{SOURCE1} %{SOURCE2} %{SOURCE3} %{SOURCE4} .

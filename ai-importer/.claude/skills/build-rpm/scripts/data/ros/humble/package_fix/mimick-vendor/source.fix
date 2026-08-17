@@ -1,0 +1,2 @@
+Source1:        Mimick-de11f8377eb95f932a03707b583bf3d4ce5bd3e7.tar.gz
+Patch0: 0-mimick-vendor-change-cmake-download.patch

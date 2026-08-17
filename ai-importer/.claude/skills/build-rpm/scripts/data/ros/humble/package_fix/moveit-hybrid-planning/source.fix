@@ -1,0 +1,4 @@
+
+# cancel_action and hybrid_planning_demo_node are compiling takes too long,
+# so remove them from package
+Patch0: moveit-hybrid-planning-remove-test.patch
