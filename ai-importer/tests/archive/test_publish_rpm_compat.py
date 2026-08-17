@@ -133,7 +133,7 @@ make install DESTDIR=%{buildroot}
 _SPEC_TEMPLATE_EXPECTED = {
     "python3-requests": "python",
     "jackson-databind": "java",
-    "rubygem-rake": "other",
+    "rubygem-rake": "ruby",  # 修复后:ruby 检测已补充
     "nodejs-semver": "nodejs",
     "perl-JSON": "perl",
     "zlib": "other",

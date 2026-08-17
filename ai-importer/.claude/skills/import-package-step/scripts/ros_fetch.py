@@ -64,7 +64,10 @@ def _reregister_deps(sd: Path, pkg: str) -> None:
     try:
         sess = json.loads((sd / "session.json").read_text(encoding="utf-8"))
         deep = sess.get("deep_dependency")
-        if deep is True or str(deep) in ("1", "true"):
+        # 递归默认为开：仅显式关闭（false/"0"）时传 --no-deep
+        if deep is False or str(deep).lower() in ("0", "false"):
+            cmd.append("--no-deep")
+        else:
             cmd.append("--deep")
     except Exception:
         pass
@@ -88,11 +91,16 @@ def main() -> int:
 
     import os
     sd = Path(args.session_dir)
-    pkg = args.pkg.strip().replace("_", "-")
+    full = args.pkg.strip().replace("_", "-")
+    cands = [full]
     for pfx in ("ros-humble-", "ros2-"):
-        if pkg.startswith(pfx):
-            pkg = pkg[len(pfx):]
-            break
+        if full.startswith(pfx) and full[len(pfx):]:
+            cands.append(full[len(pfx):])
+    # 与 ros_prep 选名对齐：优先采用已生成 manifest 的候选名（完整名优先）。
+    # ros2-numpy 这类上游名自带 ros2- 前缀，盲剥成 numpy 会找不到
+    # pkgs/<pkg>/ros_pkg_manifest.json，且报告把包名显示成 numpy
+    pkg = next((n for n in cands
+                if (sd / "pkgs" / n / "ros_pkg_manifest.json").exists()), cands[0])
 
     src_dir = sd / "sources" / pkg
     if src_dir.is_dir() and any(src_dir.iterdir()):

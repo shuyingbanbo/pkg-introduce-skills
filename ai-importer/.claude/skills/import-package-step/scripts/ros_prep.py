@@ -58,13 +58,20 @@ ROS_BASE_PKGS = {
 }
 
 
-def _norm_name(pkg: str) -> str:
-    """`-`/`_` 归一化查表：用户可能把 RPM 名（ros-humble-x）或变体输进来。"""
-    pkg = pkg.strip()
+def _norm_candidates(pkg: str) -> list[str]:
+    """包名候选（优先级从高到低）：完整名归一化在前，剥 ros-humble-/ros2- 前缀在后。
+
+    `-`/`_` 归一化查表：用户可能把 RPM 名（ros-humble-x）或变体输进来。
+    注意 ros2-numpy 这类上游包名本身就带 ros2 前缀，盲剥会变成 numpy，
+    导致清单误配、gate 对不存在的 "numpy" 做判定、报告显示错乱——
+    必须先按完整名查两级清单，查不到再尝试剥前缀。
+    """
+    full = pkg.strip().replace("_", "-")
+    cands = [full]
     for pfx in ("ros-humble-", "ros2-"):
-        if pkg.startswith(pfx):
-            return pkg[len(pfx):].replace("_", "-")
-    return pkg.replace("_", "-")
+        if full.startswith(pfx) and full[len(pfx):]:
+            cands.append(full[len(pfx):])
+    return cands
 
 
 def _read_session(sd: Path) -> dict:
@@ -94,14 +101,18 @@ def _cmp_version(listed: str, official: str) -> int:
 
 
 def _cascade_query(pkg_rpm: str, chroot: str, session: dict,
-                   version: str = "") -> dict:
-    """复用普通链的 4 级级联查询判定 ros-humble-<pkg> 的存在状态。"""
+                   version: str = "", lang: str = "ros") -> dict:
+    """复用普通链的 4 级级联查询判定包的存在状态。
+
+    lang="ros" 用于 ros-humble-<pkg> 命名归一；unresolved 非 ROS 依赖
+    （python3-transforms3d 等已是 RPM 名）传 lang="" 按原名直查。
+    """
     import os
     copr_url = session.get("copr_url", os.environ.get("COPR_FRONTEND_URL",
                                                       "http://copr-frontend:5000"))
     try:
         return check_package_existence(
-            pkg_rpm, lang="ros", version=version, requirement="",
+            pkg_rpm, lang=lang, version=version, requirement="",
             target=chroot, copr_url=copr_url,
             copr_owner=session.get("copr_owner", ""),
             copr_project=session.get("copr_project", ""),
@@ -124,7 +135,10 @@ def main() -> int:
     parser.add_argument("--pkg", required=True, help="ROS 包名")
     parser.add_argument("--session-dir", required=True)
     parser.add_argument("--ros-distro", default="humble", help="ROS 发行版（默认 humble）")
-    parser.add_argument("--deep", action="store_true", help="deep 模式：缺口自动注册依赖")
+    parser.add_argument("--deep", action="store_true", default=True,
+                        help="（默认开启，兼容保留）deep 模式：缺口自动注册依赖")
+    parser.add_argument("--no-deep", dest="deep", action="store_false",
+                        help="关闭递归：缺口依赖仅记入报告，不注册引入")
     args = parser.parse_args()
 
     sd = Path(args.session_dir)
@@ -132,7 +146,7 @@ def main() -> int:
     ros_distro = session.get("ros_distro") or args.ros_distro
     chroot = session.get("copr_chroot", "")
 
-    pkg = _norm_name(args.pkg)
+    pkg = _norm_candidates(args.pkg)[0]
     pkg_dir = sd / "pkgs" / pkg
     pkg_dir.mkdir(parents=True, exist_ok=True)
     gate_path = pkg_dir / f"gate_result_{pkg}.json"
@@ -156,6 +170,17 @@ def main() -> int:
     if not projects:
         return _fail(f"ros-projects.list 为空或不存在（distro={ros_distro}）")
     upstream = load_upstream(ros_distro)
+    # 完整名优先、剥前缀兜底：两级清单命中谁就用谁（ros2-numpy 这类上游名
+    # 自带 ros2- 前缀，盲剥会变成 numpy，导致清单误配与报告显示错乱）
+    hit = next((n for n in _norm_candidates(args.pkg)
+                if n in projects or n in upstream), None)
+    if hit and hit != pkg:
+        pkg = hit
+        pkg_dir = sd / "pkgs" / pkg
+        pkg_dir.mkdir(parents=True, exist_ok=True)
+        gate_path = pkg_dir / f"gate_result_{pkg}.json"
+        manifest_path = pkg_dir / "ros_pkg_manifest.json"
+        missing_path = pkg_dir / f"missing_deps_{pkg}.txt"
     user_url = (session.get("upstream_url") or "").strip()
     user_ver = (session.get("version") or "").strip()
 
@@ -279,15 +304,44 @@ def main() -> int:
                                   f"{rc.stderr.strip()[:200]}", file=sys.stderr)
                     else:
                         manifest["missing_deps"].append(d)
+                # 非 ROS 依赖（unresolved：两级清单与 remap 都未命中，多为
+                # python3-* 等系统/Python 包，名字通常即 RPM 名）：实证 provider，
+                # 所有源都没有的缺口在 deep 模式注册为待引入依赖走普通链
+                # （resolve_upstream 经 PyPI 等 API 定位上游），非 deep 记入
+                # missing_deps 报告提示。旧实现直接丢弃 unresolved，导致
+                # spec 带出的 Requires 到 CI 阶段才暴露（白烧一轮构建）。
+                for d in cls["unresolved"]:
+                    c = _cascade_query(d, chroot, session, lang="")
+                    if _is_official(c["decision"]):
+                        continue
+                    if args.deep:
+                        rc = subprocess.run(
+                            [sys.executable, str(SCRIPT_DIR / "register-dep.py"),
+                             "--session-dir", str(sd), "--pkg", d,
+                             "--required-by", pkg],
+                            capture_output=True, text=True, timeout=30,
+                        )
+                        if rc.returncode == 0:
+                            manifest["registered_deps"].append(d)
+                        else:
+                            manifest["missing_deps"].append(d)
+                            print(f"[ros_prep] WARN register {d} failed: "
+                                  f"{rc.stderr.strip()[:200]}", file=sys.stderr)
+                    else:
+                        manifest["missing_deps"].append(d)
         except Exception as exc:
             print(f"[ros_prep] WARN dep analysis skipped: {exc}", file=sys.stderr)
 
     _write_json(manifest_path, manifest)
 
-    # explicit 缺口清单（随任务结束写入报告，前端渲染可点击 tag）
+    # explicit 缺口清单（随任务结束写入报告，前端渲染可点击 tag）。
+    # missing_deps 里 ROS 依赖是清单短名（补 ros-<distro>- 前缀），
+    # unresolved 非 ROS 依赖已是完整 RPM 名（原样写入）
     if manifest["missing_deps"]:
+        ros_names = set(projects) | set(upstream)
         missing_path.write_text("\n".join(
-            f"ros-{ros_distro}-{d}" for d in manifest["missing_deps"]
+            f"ros-{ros_distro}-{d}" if d in ros_names else d
+            for d in manifest["missing_deps"]
         ) + "\n", encoding="utf-8")
 
     # ── 4. 伪 gate_result ───────────────────────────────────────────────────

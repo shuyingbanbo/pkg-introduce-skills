@@ -405,6 +405,9 @@ def _sync_copr_result(session_dir: Path, pkgname: str, job_id: str = "") -> None
         # 每个 chroot 用各自的 build_id（缺省退回 legacy 单 build_id——
         # 同一个 COPR build 本来就覆盖多个 chroot）；缺 build_id 或日志已拉过的跳过
         chroot_results = br.get("chroot_results") or {}
+        if not isinstance(chroot_results, dict):
+            # 历史/异常数据可能是 list，统一直接视为无缓存
+            chroot_results = {}
         todo = []
         for c in chroots:
             bid = build_ids.get(c) or legacy_build_id
@@ -440,8 +443,11 @@ def _sync_copr_result(session_dir: Path, pkgname: str, job_id: str = "") -> None
         build_data = {}
         for bid in seen_bids:
             data = get_build(bid, login, token)
+            if not isinstance(data, dict):
+                # API 异常时可能返回 list/None，防止后续 .get 连锁报错
+                data = {}
             build_data[bid] = data
-            actual_pkg = data.get("source_package", {}).get("name", "")
+            actual_pkg = (data.get("source_package") or {}).get("name", "")
             if actual_pkg and actual_pkg != pkgname:
                 expected = pkgname
                 if import_type == "ros":
@@ -493,7 +499,11 @@ def _sync_copr_result(session_dir: Path, pkgname: str, job_id: str = "") -> None
         backend_url = "http://copr-backend:5002"
         for c, bid in todo:
             data = build_data[bid]
-            state = (data.get("chroots", {}) or {}).get(c) or data.get("state", "unknown")
+            # COPR API 的 chroots 字段是 chroot 名列表（不是 {name: state} 字典），
+            # 旧代码 .get(c) 直接 AttributeError: 'list' object has no attribute 'get'
+            ch = data.get("chroots")
+            state = (ch.get(c) if isinstance(ch, dict) else None) \
+                or data.get("state", "unknown")
 
             # 如果该 chroot 还在跑就等完
             if state not in terminal:
@@ -603,7 +613,8 @@ def run_job(r, proj, job_id):
     job        = r.hgetall(f"{JOB_PREFIX}{job_id}")
     mode       = job.get("mode", "normal")
     ros_distro = job.get("ros_distro", "")
-    deep_dependency = job.get("deep_dependency", "0") == "1"
+    # 递归依赖展开默认开启（前端/API 仅显式传 "0" 才关闭）
+    deep_dependency = job.get("deep_dependency", "1") == "1"
     pkgname    = job["pkgname"]
     # Unicode 控制字符检查：含控制字符直接拒绝，不静默清理（静默清理会绕过后续白名单）
     if _strip_unicode_controls(pkgname) != pkgname:

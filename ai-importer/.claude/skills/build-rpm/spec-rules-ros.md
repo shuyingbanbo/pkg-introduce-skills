@@ -80,7 +80,7 @@ export PKG_CONFIG_PATH=/opt/ros/%{ros_distro}/lib/pkgconfig${PKG_CONFIG_PATH:+:$
   - `missing_deps[]` → 缺口包，**不写 BuildRequires**（显式模式任务已终止，此文件不应出现在 spec 阶段）
 - **`analyze_ros_deps.py` 的 `ros_deps_upstream[]`**（SIG 未移植、rosdistro 真实存在的依赖）：正常情况下 ros_fetch 已将其注册进 manifest `registered_deps[]`，按上面规则写 BuildRequires；若不在 `registered_deps[]` 中（注册失败/异常路径），**不得静默丢弃**——写 BuildRequires 让构建失败诊断循环兜底（register-missing-deps 会凭构建日志注册递归构建）。丢弃它们的后果是包构建成功但功能残废（smach-ros 漏 smach 依赖事故）
 - 系统依赖（`analyze_ros_deps.py` 的 `build_requires[]` / `unresolved[]` 经 `--check-rpm` 实证）→ 普通 BuildRequires（`-devel` 命名）
-- **反幻觉铁律**：禁止凭 Fedora/Ubuntu ROS 经验猜依赖名。每个 `ros-humble-*` BuildRequires 必须能在 `ros-projects.list`（SIG 源已有）、`ros-upstream.list`（rosdistro 全量，SIG 未移植的可递归构建）或 manifest 的依赖清单里找到依据；查不到就留空让构建失败诊断循环兜底，不得编造。**机械门禁**：spec 写完后由 `verify_ros_spec_deps.py`（SKILL §3.6）逐一比对两级清单，幻觉名直接打回；`submit_fix.py` 提交前同样强制执行
+- **反幻觉铁律**：禁止凭 Fedora/Ubuntu ROS 经验猜依赖名。每个 `ros-humble-*` BuildRequires 必须能在 `ros-projects.list`（SIG 源已有）、`ros-upstream.list`（rosdistro 全量，SIG 未移植的可递归构建）或 manifest 的依赖清单里找到依据；查不到就留空让构建失败诊断循环兜底，不得编造。**机械门禁**：spec 写完后由 `verify_ros_spec_deps.py`（SKILL §3.6）逐一比对两级清单，幻觉名直接打回；再由 `verify_spec_requires.py`（SKILL §3.7）验证所有 Requires/BuildRequires 在 CI 源集合有 provider，缺口自动注册递归引入；`submit_fix.py` 提交前两道门禁同样强制执行
 - **`<build_type>` 不是依赖**：`ament_python` 形态是纯 setuptools 构建，**不产生任何 `ros-<distro>-*` 依赖**（清单中不存在 `ament-python`，凭 build_type 脑补它是历史实踩坑）；`ament_cmake` 形态的构建工具依赖是 `ros-%{ros_distro}-ament-cmake`，由 `analyze_ros_deps.py` 自动补入 ros_deps
 - `pkg.remap` 命中（deb→rpm 映射，`data/ros/global_config/pkg.remap`）→ 按 rpm 名写
 

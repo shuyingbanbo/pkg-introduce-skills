@@ -131,10 +131,10 @@ def test_ensure_repo_file_update_and_idempotent(tmp_path):
     ("https://github.com/o/r.git",
      "https://github.com/o/r.git",
      "https://raw.githubusercontent.com/o/r/main/dist/repo-aitest.repo"),
-    # 带 token 的 URL:split("@")[-1] 会连 scheme 一起剥掉(生产代码实际行为)
+    # 带 token 的 URL:只剥凭据、保留 scheme（修复后行为，raw URL 才能正确拼出）
     ("https://u:secret@github.com/o/r.git",
-     "github.com/o/r.git",
-     "github.com/o/r/main/dist/repo-aitest.repo"),
+     "https://github.com/o/r.git",
+     "https://raw.githubusercontent.com/o/r/main/dist/repo-aitest.repo"),
 ])
 def test_ensure_readme_created(tmp_path, remote, expected_clean, expected_raw):
     repo = tmp_path / "repo"
@@ -281,15 +281,28 @@ def test_archive_reports_version_from_pkg_root(tmp_path):
     {"action": "introduced", "version": "1.0"},  # action 非 failed/blocked → success 分支
     None,                                         # 无任何结果文件 → unknown/unknown
 ])
-def test_archive_reports_success_branch_bug(tmp_path, build_result):
-    # 已知生产代码 bug:success 分支在 report_src 赋值前引用它(约第 1034 行,
-    # 赋值在约第 1048 行),必然抛 UnboundLocalError,success 归档路径实际不可达。
+def test_archive_reports_success_branch_no_report_skipped(tmp_path, build_result):
+    # 修复后行为:success 分支 report_src 已先赋值,不再 UnboundLocalError;
+    # 无结构化汇总报告时跳过 success 归档(返回 0)
     reports = tmp_path / "reports"
     reports.mkdir()
     if build_result:
         (reports / "build_rpm_result_foo.json").write_text(json.dumps(build_result))
-    with pytest.raises(UnboundLocalError):
-        p.archive_introduction_reports(["foo"], str(reports), str(tmp_path / "repo"))
+    assert p.archive_introduction_reports(["foo"], str(reports), str(tmp_path / "repo")) == 0
+
+
+def test_archive_reports_success_branch_with_report(tmp_path):
+    # success 分支完整路径:有结构化汇总报告(≥3 个章节)时归档成功
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    (reports / "build_rpm_result_foo.json").write_text(
+        json.dumps({"action": "introduced", "version": "1.0"}))
+    (reports / "foo_introduction_report.md").write_text("## 1. a\n## 2. b\n## 3. c\n")
+    repo = tmp_path / "repo"
+    assert p.archive_introduction_reports(["foo"], str(reports), str(repo)) == 1
+    archived = list((repo / "reports" / "success").glob("foo-1.0-*"))
+    assert len(archived) == 1
+    assert (archived[0] / "foo_introduction_report.md").exists()
 
 
 def test_archive_reports_multiple_pkgs(tmp_path):

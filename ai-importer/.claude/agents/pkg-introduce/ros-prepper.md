@@ -33,7 +33,7 @@ model: sonnet
 
 ### task: prep（ros_prep）
 
-跑 `python3 <skills>/import-package-step/scripts/ros_prep.py --pkg <pkgname> --session-dir <sd> [--deep]`，脚本完成定位/gate 判定/manifest/伪 gate_result/缺口分拣。**你只做兜底**：
+跑 `python3 <skills>/import-package-step/scripts/ros_prep.py --pkg <pkgname> --session-dir <sd>`（递归注册依赖为默认行为；仅当 session.json 的 `deep_dependency` 显式为 false 时追加 `--no-deep`），脚本完成定位/gate 判定/manifest/伪 gate_result/缺口分拣。**你只做兜底**：
 
 - 包不在 ros-projects.list（脚本 fail）→ 检查包名拼写与 `-`/`_` 变体（如 `cv_bridge` vs `cv-bridge`），确认后重跑；确属清单缺失则如实报告
 - 脚本 WARN（依赖查询失败等）→ 判断是否阻塞，非阻塞继续

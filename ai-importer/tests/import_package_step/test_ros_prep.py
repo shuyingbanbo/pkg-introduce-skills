@@ -12,19 +12,20 @@ rp = load_module("ros_prep", SCRIPT_DIRS["step"] / "ros_prep.py")
 
 
 # ─────────────────────────────────────────────
-# _norm_name
+# _norm_candidates(完整名优先,剥前缀兜底;替代旧 _norm_name 盲剥)
 # ─────────────────────────────────────────────
 
 @pytest.mark.parametrize("pkg,expected", [
-    ("rclcpp", "rclcpp"),
-    ("ros-humble-rclcpp", "rclcpp"),
-    ("ros2-rclcpp", "rclcpp"),
-    ("ament_cmake", "ament-cmake"),       # _ → -
-    ("ros-humble-ament_cmake", "ament-cmake"),
-    ("  rclcpp  ", "rclcpp"),             # 首尾空白
+    ("rclcpp", ["rclcpp"]),
+    ("ros-humble-rclcpp", ["ros-humble-rclcpp", "rclcpp"]),
+    ("ros2-rclcpp", ["ros2-rclcpp", "rclcpp"]),
+    ("ament_cmake", ["ament-cmake"]),                       # _ → -
+    ("ros-humble-ament_cmake", ["ros-humble-ament-cmake", "ament-cmake"]),
+    ("  rclcpp  ", ["rclcpp"]),                             # 首尾空白
+    ("ros2-numpy", ["ros2-numpy", "numpy"]),                # 上游名自带 ros2- 前缀:完整名优先
 ])
-def test_norm_name(pkg, expected):
-    assert rp._norm_name(pkg) == expected
+def test_norm_candidates(pkg, expected):
+    assert rp._norm_candidates(pkg) == expected
 
 
 # ─────────────────────────────────────────────

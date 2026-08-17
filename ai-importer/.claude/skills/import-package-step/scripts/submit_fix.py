@@ -204,6 +204,40 @@ def _ros_deps_gate(sd: Path, pkg: str, spec_path: Path) -> int:
     return 0
 
 
+def _requires_gate(sd: Path, pkg: str, spec_path: Path) -> int:
+    """Requires provider 预检：spec 声明的依赖必须在 CI 源集合有 provider。
+
+    无 provider 的 Requires 要等构建成功后的 CI 可安装性检查才暴露（白烧
+    一整轮构建），提交前拦截；缺口自动注册为待引入依赖（递归引入），
+    本轮拒绝提交，等依赖就绪后重提。
+    """
+    verify = _COPR_CLIENT.parent / "verify_spec_requires.py"
+    if not verify.exists():
+        print(f"[submit_fix] WARN: {verify} 缺失，跳过 Requires 预检", file=sys.stderr)
+        return 0
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(verify), str(spec_path), "--session-dir", str(sd),
+             "--pkg", pkg, "--register-missing"],
+            cwd=sd, capture_output=True, text=True, timeout=900,
+        )
+    except Exception as exc:
+        print(f"[submit_fix] WARN: Requires 预检执行异常（{exc}），降级放行", file=sys.stderr)
+        return 0
+    if proc.returncode == 3:
+        return _fail(9, "requires-gate-registered",
+                     f"spec 依赖缺口已注册为待引入依赖，等依赖构建完成后重提:\n"
+                     f"{proc.stderr.strip()}")
+    if proc.returncode == 1:
+        return _fail(9, "requires-gate",
+                     f"Requires 预检未通过（依赖无 provider，修正 spec 或先引入依赖）:\n"
+                     f"{proc.stderr.strip()}")
+    if proc.returncode != 0:
+        print(f"[submit_fix] WARN: Requires 预检执行异常（rc={proc.returncode}），降级放行: "
+              f"{proc.stderr.strip()[:200]}", file=sys.stderr)
+    return 0
+
+
 def _failed_chroots(sd: Path, pkg: str, chroots: list) -> list:
     """dep_registry.json 中该包 per-chroot status == "failed" 的 chroot（保持入参顺序）。
 
@@ -328,6 +362,9 @@ def main() -> int:
         if not spec_path.exists():
             return _fail(1, "env", f"spec 不存在: {spec_path}")
         rc = _ros_deps_gate(sd, pkg, spec_path)
+        if rc != 0:
+            return rc
+        rc = _requires_gate(sd, pkg, spec_path)
         if rc != 0:
             return rc
         rc = _ensure_tarball(sd, pkg, spec_path)

@@ -188,15 +188,16 @@ def test_main_same_as_previous(tmp_path, capsys, monkeypatch):
 
 
 def test_main_missing_module_hint_python(tmp_path, capsys, monkeypatch):
-    """已知 bug 固化测试:dict.fromkeys(mods)[:10] 对 dict 切片恒抛 TypeError,
-    被 except 吞掉 → missing_module_hints 恒为 []。生产修复应为
-    list(dict.fromkeys(mods))[:10](只记录,不修)。"""
+    """修复后行为:list(dict.fromkeys(mods))[:10],ModuleNotFoundError 产出
+    missing_module_hints(python 模块 → python3-<mod> RPM 建议)。"""
     log = "ModuleNotFoundError: No module named 'requests'\n"
     pkg_dir = _setup_pkg(tmp_path, build_log=log, lang="python")
     rc = _main(monkeypatch, ["--session-dir", str(tmp_path), "--pkg", "git"])
     assert rc == 0
     report = json.loads((pkg_dir / "build_failure.json").read_text())
-    assert report["missing_module_hints"] == []
+    hints = report["missing_module_hints"]
+    assert hints, "missing_module_hints 应非空"
+    assert any("requests" in str(h) for h in hints)
 
 
 def test_main_no_build_id_uses_default_name(tmp_path, capsys, monkeypatch):

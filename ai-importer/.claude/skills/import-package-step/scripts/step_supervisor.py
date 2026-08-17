@@ -407,22 +407,63 @@ def _ci_runs_for_current_build(sd: Path) -> int:
     return runs
 
 
+# dnf/CI 输出里的加载噪音行（repo 列表、下载进度、提示语），提取错误时需剔除
+_CI_NOISE_RE = re.compile(
+    r"(^Added .+ repo from |\d+(\.\d+)?\s*[kM]B/s\s*\||Last metadata expiration"
+    r"|^\(try to add|^--skip-broken|^Error downloading|^\s*$)")
+
+
+def _ci_error_essence(err: str, limit: int = 800) -> str:
+    """从 CI/dnf 原始输出提取可操作的核心错误。
+
+    dnf 输出结构：前面全是 repo 加载噪音，关键信息（Error:/Problem/
+    nothing provides ...）在末尾。旧实现 str(e)[:200] 从头截断，用户只能
+    看到 repo 镜像列表，完全无法判断失败原因。这里剔除噪音行后从
+    Error/Problem 段截取；找不到标记段则取尾部；超长从尾部保留。
+    """
+    raw = str(err)
+    lines = [l.rstrip() for l in raw.splitlines()]
+    lines = [l for l in lines if not _CI_NOISE_RE.search(l)]
+    if lines:
+        start = next(
+            (i for i, l in enumerate(lines)
+             if re.match(r"\s*(Error|Problem|Problems)\b", l)
+             or "conflicting requests" in l),
+            None)
+        text = "\n".join(lines[start:] if start is not None else lines[-8:])
+    else:
+        text = raw.strip()
+    text = text.strip()
+    if len(text) > limit:
+        text = "…" + text[-limit:]
+    return text
+
+
+def _missing_requires_hint(raw: str) -> str:
+    """从 dnf 'nothing provides X needed by Y' 提取缺失依赖，给出可行动指引。"""
+    missing = sorted({m.group(1) for m in re.finditer(
+        r"nothing provides ([^\s]+) needed by ([^\s]+)", raw)})
+    if not missing:
+        return ""
+    return ("\n缺失运行时依赖: " + ", ".join(missing) +
+            "（所有已配置软件源均未提供）。默认递归模式下重新提交本包会自动引入该依赖；"
+            "也可先单独提交该依赖的引包任务，成功后再重新提交本包。")
+
+
 def _derive_fail_reason(sd: Path, wf: dict, reg: dict, pkgname: str) -> str:
     """fail 时调用方只传了包名/空串（agent 未按约定传 reason）的兜底推导。
 
-    依次取：主包 build_rpm_result 的 failure_reason / ci_errors →
-    最新 failure_analysis 的 reason → dep_registry 里的 dep error。
-    保证 workflow error（最终发给前端的失败原因）永远有实质内容。
+    依次取：主包 build_rpm_result 的 failure_reason → 最新 failure_analysis
+    的 reason（agent 产出的人话根因，优于原始输出）→ ci_errors 的核心段
+    （剔除 repo 噪音、保留 Error/Problem 段与缺失依赖指引）→ dep_registry
+    里的 dep error。保证 workflow error（最终发给前端的失败原因）永远有
+    实质内容且用户能看懂。
     """
     br_path = sd / f"pkgs/{pkgname}/build_rpm_result.json"
-    if br_path.exists():
-        br = read_json(br_path)
-        reason = (br.get("failure_reason") or "").strip()
-        if reason:
-            return reason
-        ci_errors = br.get("ci_errors") or []
-        if ci_errors:
-            return "CI 检查未通过: " + "; ".join(str(e)[:200] for e in ci_errors[:3])
+    br = read_json(br_path) if br_path.exists() else {}
+    reason = (br.get("failure_reason") or "").strip()
+    if reason:
+        return reason
     analyses = sorted(
         sd.glob(f"pkgs/{pkgname}/failure_analysis_*.json"),
         key=lambda p: p.stat().st_mtime, reverse=True)
@@ -433,6 +474,11 @@ def _derive_fail_reason(sd: Path, wf: dict, reg: dict, pkgname: str) -> str:
             continue
         if reason:
             return reason
+    ci_errors = br.get("ci_errors") or []
+    if ci_errors:
+        essence = "\n".join(_ci_error_essence(e) for e in ci_errors[:3])
+        hint = _missing_requires_hint("\n".join(str(e) for e in ci_errors[:3]))
+        return "CI 检查未通过:\n" + essence + hint
     for dep, entry in reg.items():
         err = (entry.get("error") or "").strip() if isinstance(entry, dict) else ""
         if err:

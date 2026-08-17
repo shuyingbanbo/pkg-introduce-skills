@@ -162,7 +162,7 @@ def test_parse_npm_constraint(constraint, expected):
     ("1.2.3", "", True),             # 空约束放行
     ("1.2.3", "workspace:*", True),  # 无法解析保守放行
     ("1.2.3", "1.x", True),          # 解析失败保守放行
-    ("abc", ">=1.2", True),          # 版本格式异常保守放行
+    ("abc", ">=1.2", False),         # 非数字版本(修复后:截断为 0)不满足 >=1.2
     ("1.2", ">=1.2.3", False),       # 两段版本 pad 成 (1,2,0)
 ])
 def test_version_satisfies(rpm_version, constraint, expected):

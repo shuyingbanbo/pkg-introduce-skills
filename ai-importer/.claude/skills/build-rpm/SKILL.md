@@ -269,7 +269,23 @@ VERIFY_RC=$?
 ```
 
 - `VERIFY_RC=1`：幻觉依赖名——按输出的最近匹配建议回到 §3 修正 spec，重跑本节直至通过。**禁止跳过本门禁直接提交**。
-- `VERIFY_RC=0`：继续 §4。
+- `VERIFY_RC=0`：继续 §3.7。
+
+### 3.7 Requires provider 预检（所有语言，强制）
+
+spec 声明的 Requires/BuildRequires 必须在 CI 源集合（官方 everything/update/EPOL + COPR result + 项目 additional_repos）有 provider。无 provider 的 Requires 要等构建成功后的 CI 可安装性检查才暴露——白烧一整轮构建（ros2-numpy/python3-transforms3d 事故）：
+
+```bash
+python3 /app/.claude/skills/build-rpm/scripts/verify_spec_requires.py \
+  ./pkgs/<pkgname>/<pkgname>.spec --session-dir ${SESSION_DIR} \
+  --pkg <pkgname> --register-missing
+REQ_RC=$?
+```
+
+- `REQ_RC=3`：缺口依赖已自动注册进 dep_registry（待引入）。**禁止本次提交**——结束本轮构建动作，等 supervisor 调度依赖构建完成后再提交主包。
+- `REQ_RC=1`：依赖无 provider 且注册失败——按输出指引修正 spec（依赖名写错）或确认该依赖确实无法引入后走 abort，**不得强行提交**。
+- `REQ_RC=0`：继续 §4。
+- 脚本/环境异常（WARN 降级放行）：继续 §4，CI 仍是最终门禁。
 
 ### 4. 准备 rpmbuild 输入
 

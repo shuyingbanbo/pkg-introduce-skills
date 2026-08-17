@@ -137,20 +137,18 @@ def test_setup_container_not_exists(conf_file, loaded_modules, fake_subprocess):
     assert sc.container_exists("name") is False
 
 
-def test_fix_repo_nameerror_bug(conf_file, loaded_modules):
-    """已知 bug 固化:setup_container.fix_repo 引用未定义的 _CONF_PATH
-    (_load_conf 里是局部变量 _conf_path)→ 恒抛 NameError。生产修复:
-    把 _conf_path 提升为模块级或改用 _CONF。"""
+def test_fix_repo_ok(conf_file, loaded_modules, fake_subprocess):
+    """修复后行为:_CONF_PATH 已提升为模块级常量,fix_repo 正常执行到底
+    (docker cp 写入 repo 文件 + 容器内 dnf clean)。"""
     sc = _load(loaded_modules, "setup_container", conf_file)
-    with pytest.raises(NameError):
-        sc.fix_repo("name")
+    assert sc.fix_repo("name") is True
+    assert fake_subprocess.called_with("docker cp")
+    assert fake_subprocess.called_with("dnf clean all")
 
 
 def test_start_container(conf_file, loaded_modules, fake_subprocess, tmp_path):
     sc = _load(loaded_modules, "setup_container", conf_file)
-    monkeypatch = __import__("pytest").MonkeyPatch()
-    # fix_repo 有 _CONF_PATH NameError bug,monkeypatch 绕过(见 test_fix_repo_nameerror_bug)
-    sc.fix_repo = lambda name: True
+    # fix_repo 的 _CONF_PATH bug 已修复,docker 命令由 fake_subprocess 兜底(rc=0)
     fake_subprocess.when("docker run", returncode=0)
     assert sc.start_container(str(tmp_path), "name", "img") is True
 
