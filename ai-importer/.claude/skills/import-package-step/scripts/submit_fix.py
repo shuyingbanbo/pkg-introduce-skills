@@ -209,7 +209,9 @@ def _requires_gate(sd: Path, pkg: str, spec_path: Path) -> int:
 
     无 provider 的 Requires 要等构建成功后的 CI 可安装性检查才暴露（白烧
     一整轮构建），提交前拦截；缺口自动注册为待引入依赖（递归引入），
-    本轮拒绝提交，等依赖就绪后重提。
+    本轮拒绝提交，等依赖就绪后重提。ROS 场景另做反向完整性校验
+    （rc=4）：package.xml 声明的依赖被静默丢弃（未写进 spec 即绕过
+    provider 预检）同样拒绝提交。
     """
     verify = _COPR_CLIENT.parent / "verify_spec_requires.py"
     if not verify.exists():
@@ -227,6 +229,10 @@ def _requires_gate(sd: Path, pkg: str, spec_path: Path) -> int:
     if proc.returncode == 3:
         return _fail(9, "requires-gate-registered",
                      f"spec 依赖缺口已注册为待引入依赖，等依赖构建完成后重提:\n"
+                     f"{proc.stderr.strip()}")
+    if proc.returncode == 4:
+        return _fail(10, "completeness-gate",
+                     f"依赖完整性校验未通过（package.xml 声明的依赖被静默丢弃）:\n"
                      f"{proc.stderr.strip()}")
     if proc.returncode == 1:
         return _fail(9, "requires-gate",

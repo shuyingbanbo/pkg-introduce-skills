@@ -282,6 +282,7 @@ python3 /app/.claude/skills/build-rpm/scripts/verify_spec_requires.py \
 REQ_RC=$?
 ```
 
+- `REQ_RC=4`：依赖完整性校验未通过——`pre_check` 分析（package.xml）声明的依赖被静默丢弃，未写进 spec。按输出指引三选一：写回 spec（无 provider 的下次执行会自动注册递归引入）、`pkgs/<pkgname>/waived_deps.txt` 带理由豁免、或修正依赖名。**不得强行提交**（spec-rules-ros §6）。
 - `REQ_RC=3`：缺口依赖已自动注册进 dep_registry（待引入）。**禁止本次提交**——结束本轮构建动作，等 supervisor 调度依赖构建完成后再提交主包。
 - `REQ_RC=1`：依赖无 provider 且注册失败——按输出指引修正 spec（依赖名写错）或确认该依赖确实无法引入后走 abort，**不得强行提交**。
 - `REQ_RC=0`：继续 §4。

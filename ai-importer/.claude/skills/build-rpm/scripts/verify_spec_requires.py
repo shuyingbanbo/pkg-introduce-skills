@@ -18,6 +18,8 @@ spec 声明的依赖都有 provider。
   2  参数/环境错误
   3  缺口已注册为待引入依赖（--register-missing 模式）——调用方禁止本次
      提交，等依赖构建完成后再提交主包
+  4  完整性校验未通过：package.xml 声明的依赖被静默丢弃（未写进 spec、
+     未注册、未显式豁免）——仅 ROS 场景（存在 pre_check 分析）生效
 """
 
 import argparse
@@ -144,6 +146,89 @@ def _has_provider(cap: str, flags: list[str]) -> bool | None:
     return bool(rc.stdout.strip())
 
 
+def _load_analysis(session_dir: Path, pkg: str) -> dict | None:
+    """ROS pre_check 依赖分析（reports/pre_check_<pkg>_analysis.json）。
+
+    文件不存在（非 ROS 场景 / 分析未产出）返回 None，调用方跳过完整性校验。
+    pkg 命名在连字符/下划线间可能漂移（ros2-numpy vs ros2_numpy），两种形态都试。
+    """
+    if not pkg:
+        return None
+    reports = session_dir / "reports"
+    for cand in (reports / f"pre_check_{pkg}_analysis.json",
+                 reports / f"pre_check_{pkg.replace('-', '_')}_analysis.json",
+                 reports / f"pre_check_{pkg.replace('_', '-')}_analysis.json"):
+        if cand.exists():
+            try:
+                return json.loads(cand.read_text(encoding="utf-8"))
+            except Exception as exc:
+                print(f"[verify_spec_requires] WARN: 解析 {cand} 失败: {exc}",
+                      file=sys.stderr)
+                return None
+    return None
+
+
+def _expected_deps(analysis: dict, ros_distro: str) -> list[str]:
+    """package.xml 声明的依赖应出现在 spec 中的名字清单（spec 形态）。
+
+    ros_deps/ros_deps_upstream → ros-<distro>-<name>；build_requires（remap
+    已映射为 rpm 名）与 unresolved（名字通常即 RPM 名）原样。test_deps 按
+    纪律本就不写 spec，不在分析输出的这些字段里，无需排除。
+    """
+    distro = ros_distro or "humble"
+    expected = [f"ros-{distro}-{d.replace('_', '-')}"
+                for d in (analysis.get("ros_deps") or [])
+                + (analysis.get("ros_deps_upstream") or [])]
+    expected += list(analysis.get("build_requires") or [])
+    expected += list(analysis.get("unresolved") or [])
+    return list(dict.fromkeys(expected))
+
+
+def _load_waivers(session_dir: Path, pkg: str) -> set[str]:
+    """显式豁免清单 pkgs/<pkg>/waived_deps.txt：每行 `<dep> # <理由>`。
+
+    无理由注释的行不予认可（防空豁免变相绕过门禁），stderr 告警。
+    """
+    waived: set[str] = set()
+    if not pkg:
+        return waived
+    path = session_dir / "pkgs" / pkg / "waived_deps.txt"
+    if not path.exists():
+        return waived
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        dep, sep, reason = line.partition("#")
+        dep = dep.strip()
+        if not dep:
+            continue
+        if not sep or not reason.strip():
+            print(f"[verify_spec_requires] WARN: 豁免条目无理由，不予认可: {line}",
+                  file=sys.stderr)
+            continue
+        waived.add(dep)
+    return waived
+
+
+def _completeness_check(session_dir: Path, pkg: str, ros_distro: str,
+                        caps: list[str]) -> list[str]:
+    """反向完整性校验：package.xml 声明的依赖是否都进了 spec。
+
+    返回被静默丢弃的依赖清单（空 = 通过）。防的是 ros2-numpy 事故的另一面：
+    provider 预检只管"spec 里写了的依赖有没有 provider"，管不到"该写的依赖
+    被 agent 静默删掉"——删掉后预检与 CI 全过，但包装上是功能残废品。
+    """
+    analysis = _load_analysis(session_dir, pkg)
+    if analysis is None:
+        return []
+    waived = _load_waivers(session_dir, pkg)
+    present = set(caps)
+    dropped = [d for d in _expected_deps(analysis, ros_distro)
+               if d not in present and d not in waived]
+    return dropped
+
+
 def _register_missing(missing: list[str], session_dir: Path, pkg: str) -> list[str]:
     """把缺失依赖注册进 dep_registry（上游 URL 留空，由 resolve_upstream 经
     PyPI/npm 等 API 解析）。返回注册成功的名单。"""
@@ -194,6 +279,23 @@ def main() -> int:
     name = _spec_name(spec_text)
     caps = [c for c in _parse_requires(spec_text, ros_distro, name)
             if not _is_self_reference(c, name)]
+
+    # 反向完整性校验（ROS 场景，存在 pre_check 分析时）：package.xml 声明的
+    # 依赖必须写进 spec、或已注册递归引入后写进 spec、或显式豁免——禁止静默
+    # 丢弃。被丢弃的依赖不出现在 spec 里，provider 预检与 CI 都查不到它，
+    # 但装上的包运行时 import 直接失败（ros2-numpy/python3-transforms3d 事故）
+    dropped = _completeness_check(session_dir, args.pkg, ros_distro, caps)
+    if dropped:
+        print(json.dumps({"dropped": dropped}, ensure_ascii=False))
+        print(f"[verify_spec_requires] FAIL: package.xml 声明的依赖未写入 spec"
+              f"（静默丢弃）: {', '.join(dropped)}\n"
+              f"处置三选一：①写入 spec 的 Requires/BuildRequires（无 provider 的"
+              f"会由本脚本 --register-missing 自动注册递归引入）；②确属多余依赖，"
+              f"在 pkgs/{args.pkg or '<pkg>'}/waived_deps.txt 显式豁免并注明理由"
+              f"（格式: <dep> # <理由>）；③依赖名写错的，修正 spec",
+              file=sys.stderr)
+        return 4
+
     if not caps:
         print("[verify_spec_requires] OK: spec 无需校验的 Requires")
         return 0
