@@ -198,3 +198,50 @@ def test_main_rc4_waived_dep_passes_completeness(monkeypatch, tmp_path):
         "python3-transforms3d # 测试豁免\n", encoding="utf-8")
     rc2, _ = _run_main(monkeypatch, tmp_path, SPEC_DROPPED)
     assert rc2 != 4
+
+
+# ─────────────────────────────────────────────
+# provider 查询失败(unknown)的诚实降级
+# ─────────────────────────────────────────────
+
+def _run_provider_path(monkeypatch, tmp_path, provider_fn, extra_argv=()):
+    """跳过完整性校验(不放分析文件),mock dnf 相关外部依赖后跑 main()。"""
+    sd = _mk_session(tmp_path)  # 无 analysis → 完整性校验跳过
+    spec = tmp_path / "p.spec"
+    spec.write_text("Name: p\nRequires: dep-a\nRequires: dep-b\n", encoding="utf-8")
+    monkeypatch.setattr(vsr, "_repo_flags",
+                        lambda _sd: (["--disablerepo=*"], "fake-chroot"))
+    monkeypatch.setattr(vsr, "_warm_metadata", lambda _flags: True)
+    monkeypatch.setattr(vsr, "_has_provider", provider_fn)
+    monkeypatch.setattr("sys.argv", [
+        "verify_spec_requires.py", str(spec),
+        "--session-dir", str(sd), "--pkg", "p", *extra_argv,
+    ])
+    return vsr.main()
+
+
+def test_provider_all_unknown_degrades_with_honest_warn(monkeypatch, tmp_path, capsys):
+    """查询全挂(dnf 缺失/网络全断):rc=0 降级放行,但绝不允许报"全部有 provider"。"""
+    rc = _run_provider_path(monkeypatch, tmp_path, lambda cap, flags: None)
+    assert rc == 0
+    out = capsys.readouterr()
+    assert "未能完成 provider 验证" in out.err
+    assert "dep-a" in out.err and "dep-b" in out.err
+    assert "全部有 provider" not in out.out
+
+
+def test_provider_missing_and_unknown_both_reported(monkeypatch, tmp_path, capsys):
+    """确定缺失 + 未验证并存:rc=1 报缺失,stderr 同时列出未验证项。"""
+    def fake(cap, flags):
+        return False if cap == "dep-a" else None
+    rc = _run_provider_path(monkeypatch, tmp_path, fake)
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "dep-a" in err            # 缺失
+    assert "未能验证" in err and "dep-b" in err  # 未验证
+
+
+def test_provider_all_present_ok(monkeypatch, tmp_path, capsys):
+    rc = _run_provider_path(monkeypatch, tmp_path, lambda cap, flags: True)
+    assert rc == 0
+    assert "全部有 provider" in capsys.readouterr().out

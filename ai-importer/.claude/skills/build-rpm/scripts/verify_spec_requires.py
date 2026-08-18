@@ -128,11 +128,33 @@ def _repo_flags(session_dir: Path) -> tuple[list[str], str]:
     return flags, chroot
 
 
+def _warm_metadata(flags: list[str]) -> bool:
+    """一次性同步全部预检 repo 的元数据（后续 per-cap 查询命中本地缓存）。
+
+    首次查询要下载 everything/update/EPOL（aarch64 几十 MB）+ COPR +
+    additional_repos 的元数据，pod 网络下实测可超过 300s——若按 per-cap
+    300s 超时逐个查，第一个 cap 就超时，且每个 cap 各自超时一遍（ros2-numpy
+    事故：agent 等不及用 timeout 60 杀掉门禁直接提交）。makecache 成功后
+    后续 repoquery 全是缓存命中，秒级返回。
+    """
+    cmd = ["dnf", "--quiet", "makecache", *flags]
+    try:
+        rc = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+    except Exception as exc:
+        print(f"[verify_spec_requires] WARN: 元数据预热异常: {exc}", file=sys.stderr)
+        return False
+    if rc.returncode != 0:
+        print(f"[verify_spec_requires] WARN: 元数据预热失败: "
+              f"{rc.stderr.strip()[:200]}", file=sys.stderr)
+        return False
+    return True
+
+
 def _has_provider(cap: str, flags: list[str]) -> bool | None:
     """True=有 provider；False=确定没有；None=查询失败（网络等，按有处理）。"""
     cmd = ["dnf", "repoquery", "--quiet", "--whatprovides", cap, *flags]
     try:
-        rc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        rc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     except Exception as exc:
         print(f"[verify_spec_requires] WARN: repoquery {cap} 异常: {exc}",
               file=sys.stderr)
@@ -305,14 +327,29 @@ def main() -> int:
         # 环境不可用：降级放行（不阻塞构建，CI 仍是最终门禁）
         return 0
 
+    _warm_metadata(flags)
+
     missing: list[str] = []
+    unknown: list[str] = []
     for cap in caps:
         ok = _has_provider(cap, flags)
         if ok is False:
             missing.append(cap)
-    if not missing:
+        elif ok is None:
+            unknown.append(cap)
+    if not missing and not unknown:
         print(f"[verify_spec_requires] OK: {len(caps)} 个依赖在 {chroot} 全部有 provider")
         return 0
+    if not missing:
+        # 有未验证项但无确定缺失：降级放行，但必须明说"未验证"——
+        # 绝不允许报"全部有 provider"（查询全挂时这句结论是错的）
+        print(f"[verify_spec_requires] WARN: {len(unknown)}/{len(caps)} 个依赖"
+              f"未能完成 provider 验证（dnf/repo 异常），降级放行: "
+              f"{', '.join(unknown)} —— CI 仍是最终门禁", file=sys.stderr)
+        return 0
+    if unknown:
+        print(f"[verify_spec_requires] WARN: 另有 {len(unknown)} 个依赖未能验证"
+              f"（按有 provider 处理）: {', '.join(unknown)}", file=sys.stderr)
 
     guidance = (f"spec 声明的依赖在所有已配置源（官方 everything/update/EPOL"
                 f"{'+COPR result' if 'pre-copr-result' in ' '.join(flags) else ''}"

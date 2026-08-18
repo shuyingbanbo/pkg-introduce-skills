@@ -356,3 +356,26 @@ def test_main_no_result_build_main(tmp_path):
     assert action == "build_main"
     assert target == "main"
     assert delay is not None
+
+
+def test_main_retry_dep_resets_no_output(tmp_path):
+    """retry-dep(注册依赖=产出)清零 no_output:依赖就绪后应唤起 fixer 而非 fail。
+
+    ros2-numpy 事故复刻:第一轮 fix 注册了 python3-transforms3d(未重交,正确),
+    依赖构建完成后第二轮本应试重交,旧逻辑却把"注册依赖"也计为无产出,
+    累计 2 轮直接 fail——依赖已 build_done,主包反而被放弃。
+    """
+    _mk_session(tmp_path)
+    wf = _wf(tmp_path)
+    _gate(tmp_path)
+    reg = _reg(tmp_path, {"python3-transforms3d": {"status": "build_done",
+                                                   "required_by": "main"}})
+    _main_result(tmp_path, status="failed", copr_build_id=528,
+                 failure_reason="copr build failed")
+    pkg_dir = tmp_path / "pkgs" / "main"
+    (pkg_dir / "failure_analysis_main_528.json").write_text(json.dumps(
+        {"verdict": "retry-dep", "reason": "registered python3-transforms3d"}))
+    ss._set_fix_counter(tmp_path, "main", "no_output_rounds", 1)
+    action, target, _ = ss.determine_action(tmp_path, wf, reg)
+    assert action == "fix_failure"
+    assert target == "main"

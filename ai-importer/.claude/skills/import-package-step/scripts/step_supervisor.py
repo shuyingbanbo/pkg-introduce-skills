@@ -1589,6 +1589,29 @@ def determine_action(sd: Path, wf: dict, reg: dict) -> tuple[str, str, int | Non
                 # 正常路径下 fixer 已重新提交（build_rpm_result 变为 copr_running），
                 # 不会进入本分支（走上方 copr_running 轮询）。进入本分支 = fixer 未重提交，
                 # dep 全就绪后再唤起 fixer（fix 模式）把可用依赖加入 BuildRequires。
+                # 但依赖未就绪时正确动作是"等"而不是空转 fixer——否则 no_output
+                # 计数会在依赖构建期间白白烧完，依赖就绪时主包已被强制跳过
+                # （ros2-numpy 事故：transforms3d 构建 2 分钟期间两轮 no_output
+                # 直接把主包送走，最终报告还反过来说"需要先引入 transforms3d"）
+                not_ready = [
+                    b for b in _blockers_of(reg, PKGNAME)
+                    if not (_ready_for(reg.get(b, {}), fc) if fc
+                            else (isinstance(reg.get(b), dict)
+                                  and reg[b].get("status") in DEP_READY_STATUSES))
+                ]
+                if not_ready:
+                    return ("wait",
+                            f"{PKGNAME}(等待依赖就绪: {', '.join(sorted(not_ready))})",
+                            60)
+                if verdict == "retry-dep":
+                    # 注册依赖本身就是产出：清零 no_output 计数，让依赖就绪后的
+                    # 重交机会从 fresh 计数开始。否则"注册依赖（未重交，正确）→
+                    # 等依赖构建 → 唤起 fixer 重交"这段正常流程会被误判为两轮
+                    # 无产出，依赖就绪的瞬间主包反被强制跳过（ros2-numpy 事故：
+                    # transforms3d 已 build_done，主包却被 skip，最终报告还
+                    # 反过来说"需要先引入 transforms3d"）。fix_rounds 上限兜底
+                    # 防反复注册空转
+                    _set_fix_counter(sd, PKGNAME, "no_output_rounds", 0, chroot=fc)
                 if _fix_rounds(sd, PKGNAME, fc) >= MAX_FIX_ROUNDS:
                     if fc:
                         return _skip_main_chroot(sd, wf, reg, main_result, main_result_path,
